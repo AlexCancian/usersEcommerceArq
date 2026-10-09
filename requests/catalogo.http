@@ -1,0 +1,161 @@
+### ==============================================================================
+### E-Commerce - Microsserviço de Catálogo (REST Client)
+### Porta: 3002 | Base URL: http://localhost:3002
+### ==============================================================================
+
+@baseUrl = http://localhost:3002
+
+### ------------------------------------------------------------------------------
+### 1. HEALTH CHECK
+### ------------------------------------------------------------------------------
+
+### 1.1 Health Check (Público)
+GET {{baseUrl}}/health
+
+### ------------------------------------------------------------------------------
+### 2. CATEGORIAS (/categorias)
+### ------------------------------------------------------------------------------
+
+### 2.1 Listar Todas as Categorias (Sucesso 200)
+GET {{baseUrl}}/categorias
+
+### 2.2 Criar Nova Categoria (Sucesso 201)
+# @name novaCategoria
+POST {{baseUrl}}/categorias
+Content-Type: application/json
+
+{
+  "nome": "Games & Consoles",
+  "slug": "games-consoles"
+}
+
+### 2.3 Tentativa de Categoria com Slug Duplicado (Erro 409 Conflict)
+POST {{baseUrl}}/categorias
+Content-Type: application/json
+
+{
+  "nome": "Celulares Duplicado",
+  "slug": "celulares"
+}
+
+### 2.4 Tentativa com Dados Inválidos (Erro 400 Bad Request)
+POST {{baseUrl}}/categorias
+Content-Type: application/json
+
+{
+  "nome": "",
+  "slug": "SLUG_COM_MAIUSCULAS_E_ESPAÇO"
+}
+
+### ------------------------------------------------------------------------------
+### 3. PRODUTOS (/produtos)
+### ------------------------------------------------------------------------------
+
+### 3.1 Listar Todos os Produtos Ativos (Sucesso 200)
+GET {{baseUrl}}/produtos
+
+### 3.2 Listar Produtos Ativos com Filtro de Categoria e Busca (Sucesso 200)
+GET {{baseUrl}}/produtos?categoria=celulares&busca=Smartphone
+
+### 3.3 Listar Produtos da Categoria Livros (Sucesso 200)
+GET {{baseUrl}}/produtos?categoria=livros
+
+### 3.4 Cadastrar Novo Produto com Atributos Flexíveis (Sucesso 201)
+# @name novoProduto
+POST {{baseUrl}}/produtos
+Content-Type: application/json
+
+{
+  "sku": "TAB-099",
+  "nome": "Tablet Ultra Pro 12",
+  "categoria": "celulares",
+  "preco": 3899.90,
+  "ativo": true,
+  "atributos": {
+    "memoria": "256GB",
+    "cor": "grafite",
+    "suporteCaneta": true,
+    "tela": "12.4 polegadas AMOLED"
+  },
+  "estoque": {
+    "disponivel": 20,
+    "reservado": 0
+  }
+}
+
+### Extração do ID do Produto Criado
+@produtoId = {{novoProduto.response.body._id}}
+
+### 3.5 Tentativa com SKU Já Existente (Erro 409 Conflict)
+POST {{baseUrl}}/produtos
+Content-Type: application/json
+
+{
+  "sku": "CEL-001",
+  "nome": "Smartphone Duplicado",
+  "categoria": "celulares",
+  "preco": 1999.00,
+  "estoque": {
+    "disponivel": 5,
+    "reservado": 0
+  }
+}
+
+### 3.6 Tentativa com Preço Negativo (Erro 400 Bad Request)
+POST {{baseUrl}}/produtos
+Content-Type: application/json
+
+{
+  "sku": "ERR-001",
+  "nome": "Produto Preco Negativo",
+  "categoria": "roupas",
+  "preco": -50.00,
+  "estoque": {
+    "disponivel": 10,
+    "reservado": 0
+  }
+}
+
+### 3.7 Buscar Produto por ID ou SKU (Sucesso 200)
+GET {{baseUrl}}/produtos/{{produtoId}}
+
+### 3.8 Buscar Produto Inexistente (Erro 404 Not Found)
+GET {{baseUrl}}/produtos/64b1f234567890abcdef1234
+
+### 3.9 Atualizar Dados do Produto (Sucesso 200)
+PUT {{baseUrl}}/produtos/{{produtoId}}
+Content-Type: application/json
+
+{
+  "nome": "Tablet Ultra Pro 12 - Edição Especial",
+  "preco": 3699.00,
+  "atributos": {
+    "memoria": "256GB",
+    "cor": "grafite fosco",
+    "suporteCaneta": true,
+    "brinde": "Capa com Teclado"
+  }
+}
+
+### 3.10 Ajustar Estoque do Produto (Sucesso 200)
+PATCH {{baseUrl}}/produtos/{{produtoId}}/estoque
+Content-Type: application/json
+
+{
+  "disponivel": 45,
+  "reservado": 3
+}
+
+### 3.11 Tentativa de Estoque Negativo (Erro 400 Bad Request)
+PATCH {{baseUrl}}/produtos/{{produtoId}}/estoque
+Content-Type: application/json
+
+{
+  "disponivel": -10
+}
+
+### 3.12 Desativar Produto - Soft Delete (Sucesso 204 No Content)
+DELETE {{baseUrl}}/produtos/{{produtoId}}
+
+### 3.13 Desativar Produto Inexistente (Erro 404 Not Found)
+DELETE {{baseUrl}}/produtos/64b1f234567890abcdef1234

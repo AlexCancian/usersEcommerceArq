@@ -1,0 +1,75 @@
+services:
+  postgres-usuarios:
+    image: postgres:16-alpine
+    container_name: ecommerce-postgres-usuarios
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ecommerce_usuarios
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_usuarios_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ecommerce_usuarios"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ecommerce-net
+
+  usuarios:
+    build:
+      context: ./usuarios
+      dockerfile: Dockerfile
+    container_name: ecommerce-usuarios
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:postgres@postgres-usuarios:5432/ecommerce_usuarios?schema=public
+      JWT_SECRET: supersecret_ecommerce_jwt_key_2026
+    depends_on:
+      postgres-usuarios:
+        condition: service_healthy
+    networks:
+      - ecommerce-net
+
+  mongo-catalogo:
+    image: mongo:7-jammy
+    container_name: ecommerce-mongo-catalogo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_catalogo_data:/data/db
+    networks:
+      - ecommerce-net
+
+  catalogo:
+    build:
+      context: ./catalogo
+      dockerfile: Dockerfile
+    container_name: ecommerce-catalogo
+    restart: unless-stopped
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: 3002
+      NODE_ENV: production
+      MONGO_URI: mongodb://mongo-catalogo:27017/ecommerce_catalogo
+    depends_on:
+      - mongo-catalogo
+    networks:
+      - ecommerce-net
+
+volumes:
+  postgres_usuarios_data:
+  mongo_catalogo_data:
+
+networks:
+  ecommerce-net:
+    driver: bridge

@@ -1,0 +1,155 @@
+### ==============================================================================
+### E-Commerce - Microsserviço de Usuários (REST Client)
+### Porta: 3001 | Base URL: http://localhost:3001
+### ==============================================================================
+
+@baseUrl = http://localhost:3001
+
+### ------------------------------------------------------------------------------
+### 1. HEALTH CHECK
+### ------------------------------------------------------------------------------
+
+### 1.1 Health Check (Público)
+GET {{baseUrl}}/health
+
+### ------------------------------------------------------------------------------
+### 2. AUTENTICAÇÃO (/auth/login)
+### ------------------------------------------------------------------------------
+
+### 2.1 Login como Administrador (Sucesso 200)
+# @name loginAdmin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@loja.com",
+  "senha": "admin123"
+}
+
+### Extração do Token do Administrador
+@tokenAdmin = {{loginAdmin.response.body.token}}
+
+### 2.2 Login como Cliente (Sucesso 200)
+# @name loginCliente
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "cliente@loja.com",
+  "senha": "cliente123"
+}
+
+### Extração do Token do Cliente
+@tokenCliente = {{loginCliente.response.body.token}}
+
+### 2.3 Login com Credenciais Inválidas (Erro 401)
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "cliente@loja.com",
+  "senha": "senha_incorreta"
+}
+
+### ------------------------------------------------------------------------------
+### 3. CADASTRO DE USUÁRIOS (/usuarios)
+### ------------------------------------------------------------------------------
+
+### 3.1 Cadastro de Novo Cliente (Sucesso 201)
+# @name novoUsuario
+POST {{baseUrl}}/usuarios
+Content-Type: application/json
+
+{
+  "nome": "Mariana Oliveira",
+  "email": "mariana.oliveira@teste.com",
+  "senha": "senhaSegura123"
+}
+
+### 3.2 Tentativa com E-mail Já Cadastrado (Erro 409 Conflict)
+POST {{baseUrl}}/usuarios
+Content-Type: application/json
+
+{
+  "nome": "Mariana Duplicada",
+  "email": "mariana.oliveira@teste.com",
+  "senha": "outraSenha123"
+}
+
+### 3.3 Cadastro com Dados Inválidos (Erro 400 Bad Request)
+POST {{baseUrl}}/usuarios
+Content-Type: application/json
+
+{
+  "nome": "",
+  "email": "email_invalido",
+  "senha": "123"
+}
+
+### ------------------------------------------------------------------------------
+### 4. MEU PERFIL (/usuarios/me)
+### ------------------------------------------------------------------------------
+
+### 4.1 Consultar Meus Dados (Sucesso 200)
+GET {{baseUrl}}/usuarios/me
+Authorization: Bearer {{tokenCliente}}
+
+### 4.2 Consultar Meus Dados Sem Token (Erro 401 Unauthorized)
+GET {{baseUrl}}/usuarios/me
+
+### 4.3 Atualizar Meus Dados (Sucesso 200)
+PUT {{baseUrl}}/usuarios/me
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "nome": "Cliente de Teste Atualizado"
+}
+
+### ------------------------------------------------------------------------------
+### 5. MEUS ENDEREÇOS (/usuarios/me/enderecos)
+### ------------------------------------------------------------------------------
+
+### 5.1 Listar Meus Endereços (Sucesso 200)
+GET {{baseUrl}}/usuarios/me/enderecos
+Authorization: Bearer {{tokenCliente}}
+
+### 5.2 Cadastrar Novo Endereço (Sucesso 201)
+# @name cadastrarEndereco
+POST {{baseUrl}}/usuarios/me/enderecos
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "apelido": "Escritório",
+  "cep": "01310-100",
+  "logradouro": "Avenida Paulista",
+  "numero": "1578",
+  "complemento": "Conjunto 102",
+  "cidade": "São Paulo",
+  "uf": "SP",
+  "principal": false
+}
+
+### Extração do ID do Endereço Criado
+@enderecoId = {{cadastrarEndereco.response.body.id}}
+
+### 5.3 Excluir Endereço Cadastrado (Sucesso 204 No Content)
+DELETE {{baseUrl}}/usuarios/me/enderecos/{{enderecoId}}
+Authorization: Bearer {{tokenCliente}}
+
+### 5.4 Excluir Endereço Inexistente ou de Outro Usuário (Erro 404 Not Found)
+DELETE {{baseUrl}}/usuarios/me/enderecos/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{tokenCliente}}
+
+### ------------------------------------------------------------------------------
+### 6. ÁREA ADMINISTRATIVA (/usuarios)
+### ------------------------------------------------------------------------------
+
+### 6.1 Listar Todos os Usuários - Acesso Admin (Sucesso 200)
+GET {{baseUrl}}/usuarios
+Authorization: Bearer {{tokenAdmin}}
+
+### 6.2 Tentativa de Listagem por Cliente Comum (Erro 403 Forbidden)
+GET {{baseUrl}}/usuarios
+Authorization: Bearer {{tokenCliente}}

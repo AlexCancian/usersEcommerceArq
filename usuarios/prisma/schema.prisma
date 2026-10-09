@@ -1,0 +1,42 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Perfil {
+  cliente
+  admin
+}
+
+model Usuario {
+  id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nome       String     @db.Text
+  email      String     @unique @db.Text
+  senha_hash String     @db.Text
+  perfil     Perfil     @default(cliente)
+  criado_em  DateTime   @default(now()) @db.Timestamptz
+  enderecos  Endereco[]
+
+  @@map("usuarios")
+}
+
+model Endereco {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuario_id  String   @db.Uuid
+  apelido     String?  @db.Text
+  cep         String   @db.Text
+  logradouro  String   @db.Text
+  numero      String?  @db.Text
+  complemento String?  @db.Text
+  cidade      String   @db.Text
+  uf          String   @db.Char(2)
+  principal   Boolean  @default(false)
+
+  usuario     Usuario  @relation(fields: [usuario_id], references: [id], onDelete: Cascade)
+
+  @@map("enderecos")
+}
