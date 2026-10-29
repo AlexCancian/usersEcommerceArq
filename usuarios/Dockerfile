@@ -27,15 +27,17 @@ WORKDIR /app
 COPY package*.json ./
 COPY prisma ./prisma/
 
-RUN npm ci --only=production
+# Dependências completas: o container roda as migrations (prisma CLI) e o seed (tsx),
+# porque o banco não publica porta e não é alcançado de fora da rede do compose.
+RUN npm ci
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 
 ENV NODE_ENV=production
-ENV PORT=3001
+ENV PORT=3000
 
-EXPOSE 3001
+EXPOSE 3000
 
-CMD ["node", "dist/index.js"]
+# Migrations + seed idempotente (admin e cliente) antes de subir a API.
+CMD ["sh", "-c", "npx prisma migrate deploy && npx prisma db seed && node dist/index.js"]

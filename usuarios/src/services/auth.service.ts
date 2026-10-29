@@ -38,7 +38,7 @@ export const loginService = async (data: LoginDTO): Promise<LoginResponse> => {
   };
 
   const token = signJWTToken({
-    id: user.id,
+    sub: user.id,
     email: user.email,
     perfil: user.perfil,
   });

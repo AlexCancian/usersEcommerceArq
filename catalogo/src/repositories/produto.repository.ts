@@ -4,12 +4,13 @@ import { Produto, IProduto } from "../models/produto.model.js";
 export interface ProdutoFilterOptions {
   categoria?: string;
   busca?: string;
+  ids?: string[];
 }
 
 export const findActiveProdutos = async (
   filters: ProdutoFilterOptions
 ): Promise<IProduto[]> => {
-  const query: Record<string, any> = { ativo: true };
+  const query: Record<string, unknown> = { ativo: true };
 
   if (filters.categoria) {
     query.categoria = filters.categoria.toLowerCase();
@@ -17,6 +18,12 @@ export const findActiveProdutos = async (
 
   if (filters.busca) {
     query.nome = { $regex: filters.busca, $options: "i" };
+  }
+
+  // ?ids=a,b,c: uma consulta só para todos os produtos do carrinho (aula 07, slide 37)
+  if (filters.ids && filters.ids.length > 0) {
+    const objectIds = filters.ids.filter((id) => mongoose.Types.ObjectId.isValid(id));
+    query.$or = [{ _id: { $in: objectIds } }, { sku: { $in: filters.ids } }];
   }
 
   return Produto.find(query).sort({ criado_em: -1 });
@@ -56,7 +63,7 @@ export const updateEstoqueById = async (
   id: string,
   estoqueUpdate: { disponivel?: number; reservado?: number }
 ): Promise<IProduto | null> => {
-  const updateQuery: Record<string, any> = {};
+  const updateQuery: Record<string, number> = {};
 
   if (estoqueUpdate.disponivel !== undefined) {
     updateQuery["estoque.disponivel"] = estoqueUpdate.disponivel;

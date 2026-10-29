@@ -1,0 +1,56 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Aula 07, slide 35. Já nasce com os 4 estados; quem faz o pedido andar é o Kafka (próxima aula).
+enum StatusPedido {
+  AGUARDANDO_ESTOQUE
+  AGUARDANDO_PAGAMENTO
+  PAGO
+  CANCELADO
+}
+
+// Sem FK para usuarios e produtos: eles moram em outros bancos.
+// Quem garante que existem é o código, perguntando ao serviço dono.
+model CarrinhoItem {
+  usuario_id String @db.Uuid
+  produto_id String @db.Text // id do Mongo
+  quantidade Int // CHECK (quantidade > 0) na migration
+
+  @@id([usuario_id, produto_id])
+  @@map("carrinho_itens")
+}
+
+model Pedido {
+  id               String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuario_id       String       @db.Uuid
+  cliente_email    String       @db.Text
+  status           StatusPedido @default(AGUARDANDO_ESTOQUE)
+  valor_total      Decimal      @db.Decimal(12, 2)
+  endereco_entrega Json         @db.JsonB
+  forma_pagamento  String       @db.Text
+  cartao_final     String?      @db.Text // só os 4 últimos dígitos
+  criado_em        DateTime     @default(now()) @db.Timestamptz
+  itens            ItemPedido[]
+
+  @@map("pedidos")
+}
+
+// Preço e nome copiados: se o produto mudar amanhã, o pedido de hoje não muda.
+model ItemPedido {
+  pedido_id      String  @db.Uuid
+  produto_id     String  @db.Text
+  nome_produto   String  @db.Text
+  preco_unitario Decimal @db.Decimal(12, 2)
+  quantidade     Int
+
+  pedido Pedido @relation(fields: [pedido_id], references: [id]) // FK: mesmo banco
+
+  @@id([pedido_id, produto_id])
+  @@map("itens_pedido")
+}

@@ -19,13 +19,19 @@ WORKDIR /app
 
 COPY package*.json ./
 
-RUN npm ci --only=production
+# Dependências completas: o seed roda com tsx dentro do container,
+# porque o Mongo não publica porta e não é alcançado de fora da rede do compose.
+RUN npm ci
 
 COPY --from=builder /app/dist ./dist
+COPY tsconfig.json ./
+COPY src ./src/
+COPY seeds ./seeds/
 
 ENV NODE_ENV=production
-ENV PORT=3002
+ENV PORT=3000
 
-EXPOSE 3002
+EXPOSE 3000
 
-CMD ["node", "dist/index.js"]
+# Seed idempotente (3 categorias e 10 produtos) antes de subir a API.
+CMD ["sh", "-c", "npm run seed && node dist/index.js"]

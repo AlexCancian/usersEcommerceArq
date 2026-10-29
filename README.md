@@ -2,189 +2,163 @@
 
 Repositório estruturado no modelo de **monorepo com microsserviços independentes**. Cada serviço possui sua própria stack, dependências (`package.json`), banco de dados isolado e `Dockerfile`.
 
+- **Aula 06:** `usuarios` (Postgres) e `catalogo` (MongoDB) no Docker Compose.
+- **Aula 07:** API Gateway (Kong) na frente de tudo, JWT validado no gateway e o serviço `pedidos` (carrinho e checkout) consultando o catálogo.
+
+---
+
+## 🏗️ Arquitetura
+
+```text
+Cliente (REST Client / Postman)
+        │  Authorization: Bearer <JWT>
+        ▼
+┌──────────────────────────────┐
+│  KONG :8080 (único exposto)  │  correlation-id · apaga X-User-* · jwt (401) · acl (403)
+│                              │  injeta X-User-Id / X-User-Email / X-User-Role · rate-limit no login
+└──────────────┬───────────────┘
+               │ rede interna do Docker (ecommerce-net): ninguém de fora alcança
+     ┌─────────┼──────────────┐
+     ▼         ▼              ▼
+ usuarios   catalogo  ◄──── pedidos      (pedidos → catalogo: chamada direta, sem gateway, timeout 3 s)
+ Postgres   MongoDB         Postgres
+```
+
+- **Gateway decide a porta:** quem é você (401) e se pode entrar na rota de admin (403).
+- **Serviço decide o recurso:** este pedido/endereço é seu? (404) Ainda pode ser cancelado? (409)
+- **`usuarios` é o único que emite JWT** (HS256, `{ sub, email, perfil, iss }`, vence em 2 h). Os serviços não validam token: leem os cabeçalhos `X-User-*` que o Kong injeta.
+
 ---
 
 ## 📁 Estrutura do Repositório
 
 ```text
 usersEcommerceArq/
-├── docker-compose.yml                      # Orquestrador: Postgres, Mongo, usuarios e catalogo
-├── README.md                               # Documentação e ADRs
-├── .gitignore
-├── usuarios/                               # Microsserviço de Usuários e Autenticação (PostgreSQL)
-│   ├── Dockerfile
-│   ├── package.json
-│   ├── tsconfig.json
-│   ├── .env.example & .env
-│   ├── prisma/
-│   │   ├── schema.prisma                   # Modelagem relacional PostgreSQL
-│   │   └── seed.ts                         # Seed idempotente (admin e cliente)
+├── docker-compose.yml          # gateway + 3 serviços + 3 bancos (só o gateway publica portas)
+├── .env.example                # JWT_SECRET compartilhado por usuarios e gateway
+├── kong/
+│   └── kong.yml                # Kong sem banco: services, routes, consumers e plugins
+├── usuarios/                   # Express + Prisma + PostgreSQL (emite o JWT)
+├── catalogo/                   # Express + Mongoose + MongoDB
+├── pedidos/                    # Express + Prisma + PostgreSQL (carrinho e checkout)
+│   ├── prisma/schema.prisma    # carrinho_itens, pedidos, itens_pedido
 │   └── src/
-│       ├── config/                         # Conexão db.ts e variáveis env.ts
-│       ├── utils/                          # errors.ts, jwt.ts, password.ts, schemas.ts
-│       ├── middleware/                     # auth.ts (com requireRoles), validate.ts, errorHandler.ts
-│       ├── repositories/                   # usuario.repository.ts, endereco.repository.ts
-│       ├── services/                       # auth.service.ts, usuario.service.ts, endereco.service.ts
-│       ├── controllers/                    # Routers: auth.controller.ts, usuario.controller.ts, health.controller.ts
-│       ├── routes/                         # Centralizador que conecta os routers (routes.use)
-│       └── index.ts                        # Servidor Express na porta 3001
-├── catalogo/                               # Microsserviço de Catálogo (MongoDB)
-│   ├── Dockerfile
-│   ├── package.json
-│   ├── tsconfig.json
-│   ├── .env.example & .env
-│   ├── seeds/
-│   │   └── seed.ts                         # Seed idempotente (3 categorias, 10 produtos heterogêneos)
-│   └── src/
-│       ├── config/                         # Conexão db.ts (Mongoose) e variáveis env.ts
-│       ├── utils/                          # errors.ts, schemas.ts
-│       ├── models/                         # categoria.model.ts, produto.model.ts
-│       ├── middleware/                     # validate.ts, errorHandler.ts
-│       ├── repositories/                   # categoria.repository.ts, produto.repository.ts
-│       ├── services/                       # categoria.service.ts, produto.service.ts
-│       ├── controllers/                    # Routers: categoria.controller.ts, produto.controller.ts, health.controller.ts
-│       ├── routes/                         # Centralizador que conecta os routers (routes.use)
-│       └── index.ts                        # Servidor Express na porta 3002
+│       ├── catalogo.ts         # chamada síncrona ao catálogo (timeout 3 s → 503)
+│       ├── middleware/auth.ts  # lê X-User-* injetados pelo gateway
+│       ├── repositories/ services/ controllers/ routes/
+│       └── index.ts
 └── requests/
-    ├── usuarios.http                       # Requisições para teste do serviço de Usuários (REST Client)
-    └── catalogo.http                       # Requisições para teste do serviço de Catálogo (REST Client)
+    ├── usuarios.http
+    ├── catalogo.http
+    └── pedidos.http
 ```
+
+Cada serviço segue as camadas `controllers → services → repositories` (ADR 001) e escuta na **porta 3000 dentro do container**.
 
 ---
 
-## 🚀 Como Executar o Projeto
-
-### Opção 1: Com Docker Compose (Orquestração Completa)
-
-Na raiz do repositório, execute:
+## 🚀 Como Executar
 
 ```bash
+cp .env.example .env          # opcional: troca o JWT_SECRET
 docker compose up --build
 ```
 
-Isso subirá todos os serviços e bancos automaticamente:
-- **`postgres-usuarios`**: PostgreSQL na porta `5432`.
-- **`usuarios`**: API de Usuários na porta `3001` (`http://localhost:3001`).
-- **`mongo-catalogo`**: MongoDB na porta `27017`.
-- **`catalogo`**: API de Catálogo na porta `3002` (`http://localhost:3002`).
+Sobem: `gateway` (Kong), `usuarios`, `catalogo`, `pedidos`, `postgres-usuarios`, `mongo-catalogo` e `postgres-pedidos`.
+Cada container de serviço roda as próprias migrations e seeds idempotentes ao iniciar (os bancos não publicam porta).
+
+| Porta | O que é |
+| :--- | :--- |
+| `8080` | **API da loja** (única URL usada pelos clientes) |
+| `8001` | Admin API do Kong (leitura: `curl localhost:8001/routes`) |
+| `8002` | Kong Manager (painel) |
+
+Mudou o `kong/kong.yml`? `docker compose restart gateway`.
 
 ---
 
-### Opção 2: Execução Local em Desenvolvimento
+## 📌 Rotas pelo Gateway (`http://localhost:8080`)
 
-#### 1. Microsserviço de Usuários (Porta 3001)
-
-1. Suba o PostgreSQL (`docker compose up postgres-usuarios -d`).
-2. Acesse a pasta `usuarios`:
-   ```bash
-   cd usuarios
-   npm install
-   cp .env.example .env
-   npx prisma generate
-   npx prisma migrate dev --name init
-   npm run seed
-   npm run dev
-   ```
-
-#### 2. Microsserviço de Catálogo (Porta 3002)
-
-1. Suba o MongoDB (`docker compose up mongo-catalogo -d`).
-2. Acesse a pasta `catalogo`:
-   ```bash
-   cd catalogo
-   npm install
-   cp .env.example .env
-   npm run seed
-   npm run dev
-   ```
-
----
-
-## 📌 Rotas da API de Usuários (Porta 3001)
-
-| Método | Endpoint | Acesso | Descrição | Status Codes |
+### Usuários
+| Método | Rota | Acesso | No Kong | Sem permissão |
 | :--- | :--- | :--- | :--- | :--- |
-| `GET` | `/health` | Público | Healthcheck da aplicação e conexão com banco | `200` / `500` |
-| `POST` | `/auth/login` | Público | Autenticação com e-mail e senha. Devolve JWT | `200` / `401` |
-| `POST` | `/usuarios` | Público | Cadastro de novos clientes | `201` / `400` / `409` |
-| `GET` | `/usuarios/me` | Logado | Retorna dados cadastrais do usuário autenticado | `200` / `401` |
-| `PUT` | `/usuarios/me` | Logado | Atualiza dados cadastrais do usuário | `200` / `400` / `409` |
-| `GET` | `/usuarios/me/enderecos` | Logado | Lista os endereços cadastrados do usuário | `200` / `401` |
-| `POST` | `/usuarios/me/enderecos` | Logado | Cadastra um novo endereço para o usuário | `201` / `400` |
-| `DELETE` | `/usuarios/me/enderecos/:id` | Logado | Remove endereço informado | `204` / `404` |
-| `GET` | `/usuarios` | Admin | Listagem completa de usuários (sem `senha_hash`) | `200` / `403` |
+| `POST` | `/auth/login` | público | rate-limiting (10/min por IP) | 429 na 11ª tentativa |
+| `POST` | `/usuarios` | público | — | — |
+| `GET` · `PUT` | `/usuarios/me` | logado | jwt | 401 |
+| `GET` · `POST` | `/usuarios/me/enderecos` | logado | jwt | 401 |
+| `DELETE` | `/usuarios/me/enderecos/:id` | logado | jwt | 401 · 404 se o endereço não é seu |
+| `GET` | `/usuarios` | admin | jwt + acl allow [admin] | 401 · 403 perfil cliente |
+| `GET` | `/health/usuarios` | público | — | — |
 
----
-
-## 📌 Rotas da API de Catálogo (Porta 3002)
-
-| Método | Endpoint | Acesso | Descrição | Status Codes |
+### Catálogo
+| Método | Rota | Acesso | No Kong | Sem permissão |
 | :--- | :--- | :--- | :--- | :--- |
-| `GET` | `/health` | Público | Healthcheck da aplicação e conexão com MongoDB | `200` / `500` |
-| `GET` | `/categorias` | Público | Lista todas as categorias | `200` |
-| `POST` | `/categorias` | Admin (aberto) | Cadastra nova categoria (`nome`, `slug` único) | `201` / `400` / `409` |
-| `GET` | `/produtos?categoria=&busca=` | Público | Lista produtos ativos (`ativo: true`) com filtros | `200` |
-| `GET` | `/produtos/:id` | Público | Busca produto por ID ou SKU | `200` / `404` |
-| `POST` | `/produtos` | Admin (aberto) | Cria novo produto com atributos flexíveis e estoque | `201` / `400` / `409` |
-| `PUT` | `/produtos/:id` | Admin (aberto) | Atualiza dados completos do produto | `200` / `400` / `404` |
-| `PATCH` | `/produtos/:id/estoque` | Admin (aberto) | Ajusta estoque (`disponivel`, `reservado`) | `200` / `400` / `404` |
-| `DELETE` | `/produtos/:id` | Admin (aberto) | Soft Delete: define `ativo = false` (não apaga) | `204` / `404` |
+| `GET` | `/produtos?categoria=&busca=&ids=` | público | — | — |
+| `GET` | `/produtos/:id` | público | — | — |
+| `GET` | `/categorias` | público | — | — |
+| `POST` | `/produtos` | admin | jwt + acl allow [admin] | 401 · 403 |
+| `PUT` | `/produtos/:id` | admin | jwt + acl allow [admin] | 401 · 403 |
+| `PATCH` | `/produtos/:id/estoque` | admin | jwt + acl allow [admin] | 401 · 403 |
+| `DELETE` | `/produtos/:id` | admin | jwt + acl allow [admin] | 401 · 403 |
+| `POST` | `/categorias` | admin | jwt + acl allow [admin] | 401 · 403 |
+| `GET` | `/health/catalogo` | público | — | — |
 
-> *Nota (Slide 8): As rotas de admin do catálogo ficam abertas por enquanto. A validação de token entre serviços será gerenciada pelo API Gateway na próxima etapa.*
+### Pedidos
+| Método | Rota | Acesso | Retornos |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/carrinho` | logado | 200 `{ itens, total }` com preços atuais do catálogo |
+| `POST` | `/carrinho/itens` | logado | 201 · 400 quantidade inválida · 404 produto não existe |
+| `DELETE` | `/carrinho/itens/:produtoId` | logado | 204 · 404 não está no carrinho |
+| `POST` | `/pedidos` | logado | 202 aceito · 400 carrinho vazio · 409 produto indisponível · 503 catálogo fora |
+| `GET` | `/pedidos` | logado | 200 meus pedidos |
+| `GET` | `/pedidos/:id` | logado | 200 pedido com itens · 404 não existe ou não é meu |
+| `POST` | `/pedidos/:id/cancelar` | logado | 200 cancelado · 409 status não permite |
+| `GET` | `/health/pedidos` | público | 200 serviço e banco ok |
 
----
-
-## 🛡️ Formato de Erro Padronizado (Slide 9)
-
-Ambos os serviços respondem com o mesmo formato padronizado:
-
-**Erro simples:**
+Corpo do checkout (`POST /pedidos`):
 ```json
 {
-  "erro": "Este e-mail já está cadastrado."
+  "endereco_entrega": { "cep": "01310-100", "logradouro": "Av. Paulista", "numero": "1578", "cidade": "São Paulo", "uf": "SP" },
+  "forma_pagamento": "cartao",
+  "numero_cartao": "4111111111111111"
 }
 ```
+`forma_pagamento`: `cartao`, `pix` ou `boleto`. Do cartão, só os 4 últimos dígitos são gravados (`cartao_final`).
 
-**Erro de validação (400 Bad Request):**
+---
+
+## 🛡️ Formato de Erro Padronizado
+
+Todos os serviços respondem no mesmo formato:
+
 ```json
-{
-  "erro": "Dados inválidos.",
-  "detalhes": [
-    "preco deve ser maior que zero",
-    "sku é obrigatório"
-  ]
-}
+{ "erro": "Este e-mail já está cadastrado." }
+```
+```json
+{ "erro": "Dados inválidos.", "detalhes": ["preco deve ser maior que zero", "sku é obrigatório"] }
 ```
 
 - Nunca há vazamento de stack trace ou mensagens técnicas de banco de dados para o cliente.
 - `senha_hash` nunca é retornada nas respostas HTTP.
+- 401, 403, 404 de rota desconhecida e 429 recusados no gateway vêm no formato do Kong (`{ "message": ... }`).
 
 ---
 
 ## 🌱 Seeds Obrigatórios e Idempotência
 
-Ambos os serviços possuem seeds idempotentes (`npm run seed`):
+1. **Usuários (`usuarios/prisma/seed.ts`):** `admin@loja.com` / `admin123` e `cliente@loja.com` / `cliente123` (com endereço).
+2. **Catálogo (`catalogo/seeds/seed.ts`):** 3 categorias (`celulares`, `roupas`, `livros`) e 10 produtos com atributos diferentes por categoria.
 
-1. **Usuários (`usuarios/prisma/seed.ts`):**
-   - Admin: `admin@loja.com` / `admin123`
-   - Cliente: `cliente@loja.com` / `cliente123` (com endereço padrão associado).
-2. **Catálogo (`catalogo/seeds/seed.ts`):**
-   - 3 Categorias: `celulares`, `roupas`, `livros`.
-   - 10 Produtos com atributos dinâmicos e heterogêneos por categoria (ex: celular com `memoria`/`cor`/`5G`, roupas com `tamanho`/`tecido`, livros com `autor`/`paginas`/`editora`).
+Rodam automaticamente na subida dos containers; rodar de novo não duplica.
 
 ---
 
-## 🧪 Testes com REST Client (Extensão do VS Code / Antigravity)
+## 🧪 Testes com REST Client
 
-Os arquivos de teste estão organizados na pasta `requests/`:
-- 👉 [usuarios.http](file:///c:/Users/AlexCancian/Desktop/arq/usersEcommerceArq/requests/usuarios.http): Todas as rotas de usuários, login, perfil `/me`, CRUD de endereços e permissão de admin.
-- 👉 [catalogo.http](file:///c:/Users/AlexCancian/Desktop/arq/usersEcommerceArq/requests/catalogo.http): Todas as rotas de categorias, produtos ativos, busca, criação, ajuste de estoque e soft delete.
-
-### Como usar:
-1. Instale a extensão **REST Client** (Huachao Mao) no seu editor, se ainda não tiver.
-2. Abra `requests/usuarios.http` ou `requests/catalogo.http`.
-3. Clique em **"Send Request"** logo acima de qualquer requisição.
-4. As requisições de login e criação utilizam a diretiva `# @name` para extrair automaticamente tokens JWT e IDs para as chamadas subsequentes sem necessidade de copiar e colar manualmente.
+Arquivos em `requests/`, todos com `@baseUrl = http://localhost:8080`:
+- `usuarios.http`: login, cadastro, `/me`, endereços, admin, rate-limit, tentativa de se passar por admin com `X-User-Role`.
+- `catalogo.http`: vitrine pública, rotas de admin com token de admin (201/200), de cliente (403) e sem token (401).
+- `pedidos.http`: login → carrinho → checkout (202) → consultar pedido; erros de carrinho vazio, pedido de outro usuário (404), cancelamento (409) e catálogo fora (503).
 
 ---
 
@@ -201,3 +175,11 @@ Os arquivos de teste estão organizados na pasta `requests/`:
 
 ### ADR 004: Validação em Duas Etapas
 - **Decisão:** Schemas Zod na camada de entrada com mensagens amigáveis e índices únicos no banco (`email`, `sku`, `slug`) como garantia final.
+
+### ADR 005: Kong sem banco como API Gateway
+- **Decisão:** Kong 3.9 em modo declarativo (`kong/kong.yml` versionado). Rotas com três níveis de acesso (`publico`, `logado` = jwt, `admin` = jwt + acl). Os consumers são perfis (`cliente`, `admin`), não pessoas: o plugin jwt acha o consumer pelo campo `perfil` do token.
+- **Consequência:** só o gateway publica portas; os serviços confiam em `X-User-*` porque nada de fora alcança a rede interna. O Kong apaga esses cabeçalhos quando vêm do cliente.
+
+### ADR 006: Pedidos com Postgres próprio e chamada síncrona ao catálogo
+- **Decisão:** `pedidos` tem seu próprio Postgres, sem FK para usuários e produtos (outros bancos). No checkout, pergunta ao catálogo direto pela rede interna (`GET /produtos?ids=...`, uma chamada para todos os itens) com timeout de 3 s.
+- **Consequência:** acoplamento temporal. Catálogo fora → checkout responde 503, mas carrinho e lista de pedidos continuam funcionando. Preço e nome são copiados para `itens_pedido` (histórico). O pedido nasce em `AGUARDANDO_ESTOQUE`; quem o faz andar é o Kafka, na próxima aula.

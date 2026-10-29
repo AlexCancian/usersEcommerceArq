@@ -1,0 +1,233 @@
+### ==============================================================================
+### E-Commerce - Pedidos pelo API Gateway (REST Client)
+### Fluxo: login → adicionar ao carrinho → ver carrinho → checkout (202) → consultar pedido
+### Todas as rotas de carrinho e pedidos são "logado" (jwt no Kong).
+### ==============================================================================
+
+@baseUrl = http://localhost:8080
+
+### ------------------------------------------------------------------------------
+### 0. PREPARAÇÃO
+### ------------------------------------------------------------------------------
+
+### 0.1 Health Check (Público) - no gateway: /health/pedidos
+GET {{baseUrl}}/health/pedidos
+
+### 0.2 Login como Cliente
+# @name loginCliente
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "cliente@loja.com",
+  "senha": "cliente123"
+}
+
+@tokenCliente = {{loginCliente.response.body.token}}
+
+### 0.3 Login como Administrador (usado como "outro usuário")
+# @name loginAdmin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@loja.com",
+  "senha": "admin123"
+}
+
+@tokenAdmin = {{loginAdmin.response.body.token}}
+
+### 0.4 Vitrine: pega dois produtos do seed para usar no carrinho
+# @name vitrine
+GET {{baseUrl}}/produtos?ids=CEL-001,CAM-010
+
+@produtoA = {{vitrine.response.body.$[0]._id}}
+@produtoB = {{vitrine.response.body.$[1]._id}}
+
+### ------------------------------------------------------------------------------
+### 1. CARRINHO
+### ------------------------------------------------------------------------------
+
+### 1.1 Adicionar Produto A ao Carrinho (Sucesso 201)
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "produto_id": "{{produtoA}}",
+  "quantidade": 1
+}
+
+### 1.2 Adicionar Produto B ao Carrinho (Sucesso 201)
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "produto_id": "{{produtoB}}",
+  "quantidade": 2
+}
+
+### 1.3 Quantidade Inválida (Erro 400)
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "produto_id": "{{produtoA}}",
+  "quantidade": 0
+}
+
+### 1.4 Produto que Não Existe (Erro 404)
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "produto_id": "64b1f234567890abcdef1234",
+  "quantidade": 1
+}
+
+### 1.5 Ver Carrinho com Preços Atuais do Catálogo (Sucesso 200 { itens, total })
+GET {{baseUrl}}/carrinho
+Authorization: Bearer {{tokenCliente}}
+
+### 1.6 Remover Produto B do Carrinho (Sucesso 204)
+DELETE {{baseUrl}}/carrinho/itens/{{produtoB}}
+Authorization: Bearer {{tokenCliente}}
+
+### 1.7 Remover Produto que Não Está no Carrinho (Erro 404)
+DELETE {{baseUrl}}/carrinho/itens/{{produtoB}}
+Authorization: Bearer {{tokenCliente}}
+
+### 1.8 Carrinho Sem Token (Erro 401 - Kong)
+GET {{baseUrl}}/carrinho
+
+### ------------------------------------------------------------------------------
+### 2. CHECKOUT (POST /pedidos)
+### ------------------------------------------------------------------------------
+
+### 2.1 Finalizar Compra (Sucesso 202 - pedido aceito, status AGUARDANDO_ESTOQUE)
+# @name checkout
+POST {{baseUrl}}/pedidos
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "endereco_entrega": {
+    "cep": "01310-100",
+    "logradouro": "Avenida Paulista",
+    "numero": "1578",
+    "cidade": "São Paulo",
+    "uf": "SP"
+  },
+  "forma_pagamento": "cartao",
+  "numero_cartao": "4111111111111111"
+}
+
+@pedidoId = {{checkout.response.body.id}}
+
+### 2.2 Checkout com Carrinho Vazio (Erro 400 - o 2.1 esvaziou o carrinho)
+POST {{baseUrl}}/pedidos
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "endereco_entrega": {
+    "cep": "01310-100",
+    "logradouro": "Avenida Paulista",
+    "cidade": "São Paulo",
+    "uf": "SP"
+  },
+  "forma_pagamento": "pix"
+}
+
+### 2.3 Cartão Sem Número (Erro 400)
+POST {{baseUrl}}/pedidos
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "endereco_entrega": {
+    "cep": "01310-100",
+    "logradouro": "Avenida Paulista",
+    "cidade": "São Paulo",
+    "uf": "SP"
+  },
+  "forma_pagamento": "cartao"
+}
+
+### ------------------------------------------------------------------------------
+### 3. CONSULTAR PEDIDOS
+### ------------------------------------------------------------------------------
+
+### 3.1 Meus Pedidos (Sucesso 200)
+GET {{baseUrl}}/pedidos
+Authorization: Bearer {{tokenCliente}}
+
+### 3.2 Pedido com Itens (Sucesso 200) - cartao_final tem só 4 dígitos
+GET {{baseUrl}}/pedidos/{{pedidoId}}
+Authorization: Bearer {{tokenCliente}}
+
+### 3.3 Pedido de Outro Usuário (Erro 404 - não 403: não confirma que o pedido existe)
+GET {{baseUrl}}/pedidos/{{pedidoId}}
+Authorization: Bearer {{tokenAdmin}}
+
+### 3.4 Pedido Inexistente (Erro 404)
+GET {{baseUrl}}/pedidos/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{tokenCliente}}
+
+### ------------------------------------------------------------------------------
+### 4. CANCELAR
+### ------------------------------------------------------------------------------
+
+### 4.1 Cancelar Pedido (Sucesso 200)
+POST {{baseUrl}}/pedidos/{{pedidoId}}/cancelar
+Authorization: Bearer {{tokenCliente}}
+
+### 4.2 Cancelar de Novo (Erro 409 - status CANCELADO não permite)
+POST {{baseUrl}}/pedidos/{{pedidoId}}/cancelar
+Authorization: Bearer {{tokenCliente}}
+
+### ------------------------------------------------------------------------------
+### 5. CATÁLOGO FORA (acoplamento temporal)
+### ------------------------------------------------------------------------------
+### Passo a passo:
+###   a) rode o 5.1 (põe um item no carrinho)
+###   b) no terminal: docker compose stop catalogo
+###   c) rode o 5.2 → 503 no checkout
+###   d) rode o 5.3 e o 5.4 → carrinho e lista de pedidos continuam funcionando
+###   e) no terminal: docker compose start catalogo
+
+### 5.1 Adicionar item (com o catálogo no ar)
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "produto_id": "{{produtoA}}",
+  "quantidade": 1
+}
+
+### 5.2 Checkout com o Catálogo Fora (Erro 503)
+POST {{baseUrl}}/pedidos
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "endereco_entrega": {
+    "cep": "01310-100",
+    "logradouro": "Avenida Paulista",
+    "cidade": "São Paulo",
+    "uf": "SP"
+  },
+  "forma_pagamento": "boleto"
+}
+
+### 5.3 Carrinho com o Catálogo Fora (Sucesso 200, sem preços e com aviso)
+GET {{baseUrl}}/carrinho
+Authorization: Bearer {{tokenCliente}}
+
+### 5.4 Meus Pedidos com o Catálogo Fora (Sucesso 200)
+GET {{baseUrl}}/pedidos
+Authorization: Bearer {{tokenCliente}}

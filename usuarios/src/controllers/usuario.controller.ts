@@ -1,8 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import {
   AuthenticatedRequest,
-  authenticateJWT,
-  requireRoles,
+  lerIdentidade,
 } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
 import {
@@ -39,11 +38,10 @@ router.post(
   }
 );
 
-// GET /usuarios - Listar todos os usuários (Acesso restrito para admin)
+// GET /usuarios - Listar todos os usuários (admin: o Kong exige jwt + acl allow [admin])
 router.get(
   "/",
-  authenticateJWT,
-  requireRoles(["admin"]),
+  lerIdentidade,
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const usuarios = await getAllUsuariosService();
@@ -57,7 +55,7 @@ router.get(
 // GET /usuarios/me - Obter dados do usuário autenticado
 router.get(
   "/me",
-  authenticateJWT,
+  lerIdentidade,
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const usuario = await getMeService(req.user!.id);
@@ -71,7 +69,7 @@ router.get(
 // PUT /usuarios/me - Atualizar dados do usuário autenticado
 router.put(
   "/me",
-  authenticateJWT,
+  lerIdentidade,
   validate(updateUsuarioSchema),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
@@ -86,7 +84,7 @@ router.put(
 // GET /usuarios/me/enderecos - Listar endereços do usuário autenticado
 router.get(
   "/me/enderecos",
-  authenticateJWT,
+  lerIdentidade,
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const enderecos = await listEnderecosService(req.user!.id);
@@ -100,7 +98,7 @@ router.get(
 // POST /usuarios/me/enderecos - Cadastrar novo endereço para usuário autenticado
 router.post(
   "/me/enderecos",
-  authenticateJWT,
+  lerIdentidade,
   validate(createEnderecoSchema),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
@@ -115,7 +113,7 @@ router.post(
 // DELETE /usuarios/me/enderecos/:id - Excluir endereço do usuário autenticado
 router.delete(
   "/me/enderecos/:id",
-  authenticateJWT,
+  lerIdentidade,
   validate(enderecoIdParamSchema),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {

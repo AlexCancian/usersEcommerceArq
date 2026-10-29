@@ -23,7 +23,7 @@ app.use((req, res) => {
 // Middleware global de erros padronizado
 app.use(errorHandler);
 
-const PORT = env.PORT || 3002;
+const PORT = env.PORT || 3000;
 
 const startServer = async () => {
   await connectDatabase();

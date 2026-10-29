@@ -1,19 +1,19 @@
 ### ==============================================================================
-### E-Commerce - Microsserviço de Usuários (REST Client)
-### Porta: 3001 | Base URL: http://localhost:3001
+### E-Commerce - Usuários pelo API Gateway (REST Client)
+### Uma URL só: a do gateway (Kong). As portas dos serviços não são publicadas.
 ### ==============================================================================
 
-@baseUrl = http://localhost:3001
+@baseUrl = http://localhost:8080
 
 ### ------------------------------------------------------------------------------
 ### 1. HEALTH CHECK
 ### ------------------------------------------------------------------------------
 
-### 1.1 Health Check (Público)
-GET {{baseUrl}}/health
+### 1.1 Health Check (Público) - no gateway: /health/usuarios
+GET {{baseUrl}}/health/usuarios
 
 ### ------------------------------------------------------------------------------
-### 2. AUTENTICAÇÃO (/auth/login)
+### 2. AUTENTICAÇÃO (/auth/login) - rate-limiting: 10 por minuto por IP
 ### ------------------------------------------------------------------------------
 
 ### 2.1 Login como Administrador (Sucesso 200)
@@ -43,6 +43,7 @@ Content-Type: application/json
 @tokenCliente = {{loginCliente.response.body.token}}
 
 ### 2.3 Login com Credenciais Inválidas (Erro 401)
+### Mande 11 vezes em menos de 1 minuto: a 11ª recebe 429 Too Many Requests (Kong).
 POST {{baseUrl}}/auth/login
 Content-Type: application/json
 
@@ -52,7 +53,7 @@ Content-Type: application/json
 }
 
 ### ------------------------------------------------------------------------------
-### 3. CADASTRO DE USUÁRIOS (/usuarios)
+### 3. CADASTRO DE USUÁRIOS (/usuarios) - público
 ### ------------------------------------------------------------------------------
 
 ### 3.1 Cadastro de Novo Cliente (Sucesso 201)
@@ -87,17 +88,21 @@ Content-Type: application/json
 }
 
 ### ------------------------------------------------------------------------------
-### 4. MEU PERFIL (/usuarios/me)
+### 4. MEU PERFIL (/usuarios/me) - logado (jwt no Kong)
 ### ------------------------------------------------------------------------------
 
 ### 4.1 Consultar Meus Dados (Sucesso 200)
 GET {{baseUrl}}/usuarios/me
 Authorization: Bearer {{tokenCliente}}
 
-### 4.2 Consultar Meus Dados Sem Token (Erro 401 Unauthorized)
+### 4.2 Consultar Meus Dados Sem Token (Erro 401 - Kong)
 GET {{baseUrl}}/usuarios/me
 
-### 4.3 Atualizar Meus Dados (Sucesso 200)
+### 4.3 Token Falso (Erro 401 "Bad token; invalid JSON" - Kong)
+GET {{baseUrl}}/usuarios/me
+Authorization: Bearer isto-nao-e-um-token
+
+### 4.4 Atualizar Meus Dados (Sucesso 200)
 PUT {{baseUrl}}/usuarios/me
 Authorization: Bearer {{tokenCliente}}
 Content-Type: application/json
@@ -107,14 +112,17 @@ Content-Type: application/json
 }
 
 ### ------------------------------------------------------------------------------
-### 5. MEUS ENDEREÇOS (/usuarios/me/enderecos)
+### 5. MEUS ENDEREÇOS (/usuarios/me/enderecos) - logado
 ### ------------------------------------------------------------------------------
 
 ### 5.1 Listar Meus Endereços (Sucesso 200)
 GET {{baseUrl}}/usuarios/me/enderecos
 Authorization: Bearer {{tokenCliente}}
 
-### 5.2 Cadastrar Novo Endereço (Sucesso 201)
+### 5.2 Listar Endereços Sem Token (Erro 401 - Kong)
+GET {{baseUrl}}/usuarios/me/enderecos
+
+### 5.3 Cadastrar Novo Endereço (Sucesso 201)
 # @name cadastrarEndereco
 POST {{baseUrl}}/usuarios/me/enderecos
 Authorization: Bearer {{tokenCliente}}
@@ -134,22 +142,39 @@ Content-Type: application/json
 ### Extração do ID do Endereço Criado
 @enderecoId = {{cadastrarEndereco.response.body.id}}
 
-### 5.3 Excluir Endereço Cadastrado (Sucesso 204 No Content)
+### 5.4 Excluir Endereço Cadastrado (Sucesso 204 No Content)
 DELETE {{baseUrl}}/usuarios/me/enderecos/{{enderecoId}}
 Authorization: Bearer {{tokenCliente}}
 
-### 5.4 Excluir Endereço Inexistente ou de Outro Usuário (Erro 404 Not Found)
+### 5.5 Excluir Endereço Inexistente ou de Outro Usuário (Erro 404 - serviço)
+### O Kong sabe quem você é, mas não sabe de quem é cada endereço.
 DELETE {{baseUrl}}/usuarios/me/enderecos/00000000-0000-0000-0000-000000000000
 Authorization: Bearer {{tokenCliente}}
 
 ### ------------------------------------------------------------------------------
-### 6. ÁREA ADMINISTRATIVA (/usuarios)
+### 6. ÁREA ADMINISTRATIVA (/usuarios) - admin (jwt + acl no Kong)
 ### ------------------------------------------------------------------------------
 
 ### 6.1 Listar Todos os Usuários - Acesso Admin (Sucesso 200)
 GET {{baseUrl}}/usuarios
 Authorization: Bearer {{tokenAdmin}}
 
-### 6.2 Tentativa de Listagem por Cliente Comum (Erro 403 Forbidden)
+### 6.2 Tentativa de Listagem por Cliente Comum (Erro 403 - Kong acl)
 GET {{baseUrl}}/usuarios
 Authorization: Bearer {{tokenCliente}}
+
+### 6.3 Tentar se passar por admin pelo cabeçalho (Erro 401 - Kong)
+### O Kong apaga X-User-* que vêm de fora: o cliente não escolhe quem é.
+GET {{baseUrl}}/usuarios
+X-User-Role: admin
+X-User-Id: 00000000-0000-0000-0000-000000000000
+
+### ------------------------------------------------------------------------------
+### 7. GATEWAY
+### ------------------------------------------------------------------------------
+
+### 7.1 Rota que não está no kong.yml (Erro 404 do próprio Kong)
+GET {{baseUrl}}/rota-que-nao-existe
+
+### 7.2 Toda resposta traz o X-Request-Id (correlation-id). Confira os cabeçalhos.
+GET {{baseUrl}}/health/usuarios

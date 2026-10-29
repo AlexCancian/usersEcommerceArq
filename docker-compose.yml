@@ -1,4 +1,40 @@
+# Aula 07: só o gateway publica portas. Serviços e bancos ficam na rede interna
+# (ecommerce-net); os nomes usuarios, catalogo e pedidos são o DNS dessa rede.
 services:
+  # ------------------------------------------------------------- API Gateway
+  gateway:
+    image: kong:3.9
+    container_name: ecommerce-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8000" # a API da loja
+      - "8001:8001" # Admin API (leitura)
+      - "8002:8002" # Kong Manager
+    volumes:
+      - ./kong:/kong:ro
+    # Troca __JWT_SECRET__ pelo valor da variável e sobe o Kong com o arquivo resultante.
+    entrypoint:
+      [
+        "sh",
+        "-c",
+        "sed \"s|__JWT_SECRET__|$${JWT_SECRET}|g\" /kong/kong.yml > /tmp/kong.yml && exec /docker-entrypoint.sh kong docker-start",
+      ]
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /tmp/kong.yml
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_ADMIN_GUI_LISTEN: 0.0.0.0:8002
+      KONG_UNTRUSTED_LUA_SANDBOX_REQUIRES: kong.plugins.jwt.jwt_parser
+      JWT_SECRET: ${JWT_SECRET:-supersecret_ecommerce_jwt_key_2026}
+    depends_on:
+      - usuarios
+      - catalogo
+      - pedidos
+    networks:
+      - ecommerce-net
+
+  # ---------------------------------------------------------------- usuarios
   postgres-usuarios:
     image: postgres:16-alpine
     container_name: ecommerce-postgres-usuarios
@@ -7,8 +43,6 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: ecommerce_usuarios
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_usuarios_data:/var/lib/postgresql/data
     healthcheck:
@@ -25,25 +59,23 @@ services:
       dockerfile: Dockerfile
     container_name: ecommerce-usuarios
     restart: unless-stopped
-    ports:
-      - "3001:3001"
     environment:
-      PORT: 3001
+      PORT: 3000
       NODE_ENV: production
       DATABASE_URL: postgresql://postgres:postgres@postgres-usuarios:5432/ecommerce_usuarios?schema=public
-      JWT_SECRET: supersecret_ecommerce_jwt_key_2026
+      # Mesmo segredo do gateway: usuarios assina, o Kong confere.
+      JWT_SECRET: ${JWT_SECRET:-supersecret_ecommerce_jwt_key_2026}
     depends_on:
       postgres-usuarios:
         condition: service_healthy
     networks:
       - ecommerce-net
 
+  # ---------------------------------------------------------------- catalogo
   mongo-catalogo:
     image: mongo:7-jammy
     container_name: ecommerce-mongo-catalogo
     restart: unless-stopped
-    ports:
-      - "27017:27017"
     volumes:
       - mongo_catalogo_data:/data/db
     networks:
@@ -55,10 +87,8 @@ services:
       dockerfile: Dockerfile
     container_name: ecommerce-catalogo
     restart: unless-stopped
-    ports:
-      - "3002:3002"
     environment:
-      PORT: 3002
+      PORT: 3000
       NODE_ENV: production
       MONGO_URI: mongodb://mongo-catalogo:27017/ecommerce_catalogo
     depends_on:
@@ -66,9 +96,49 @@ services:
     networks:
       - ecommerce-net
 
+  # ----------------------------------------------------------------- pedidos
+  postgres-pedidos:
+    image: postgres:16-alpine
+    container_name: ecommerce-postgres-pedidos
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ecommerce_pedidos
+    volumes:
+      - postgres_pedidos_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ecommerce_pedidos"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ecommerce-net
+
+  pedidos:
+    build:
+      context: ./pedidos
+      dockerfile: Dockerfile
+    container_name: ecommerce-pedidos
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:postgres@postgres-pedidos:5432/ecommerce_pedidos?schema=public
+      # Chamada síncrona direta pela rede interna, sem passar pelo gateway
+      CATALOGO_URL: http://catalogo:3000
+    depends_on:
+      postgres-pedidos:
+        condition: service_healthy
+      catalogo:
+        condition: service_started
+    networks:
+      - ecommerce-net
+
 volumes:
   postgres_usuarios_data:
   mongo_catalogo_data:
+  postgres_pedidos_data:
 
 networks:
   ecommerce-net:

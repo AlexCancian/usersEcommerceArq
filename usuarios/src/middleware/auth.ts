@@ -1,50 +1,32 @@
 import { Request, Response, NextFunction } from "express";
-import { verifyJWTToken, TokenPayload } from "../utils/jwt.js";
-import { UnauthorizedError, ForbiddenError } from "../utils/errors.js";
+import { UnauthorizedError } from "../utils/errors.js";
 
-export interface AuthenticatedRequest<
-  P = Record<string, any>,
-  ResBody = any,
-  ReqBody = any,
-  ReqQuery = any,
-> extends Request<P, ResBody, ReqBody, ReqQuery> {
-  user?: TokenPayload;
+// Identidade injetada pelo gateway (aula 07): o Kong valida o JWT, apaga os
+// X-User-* que vieram do cliente e escreve os valores tirados do token.
+// O serviço não valida token: só lê os cabeçalhos, porque só o gateway alcança a rede interna.
+export interface UsuarioIdentidade {
+  id: string;
+  email: string;
+  perfil: "cliente" | "admin";
 }
 
-export const authenticateJWT = (
+export interface AuthenticatedRequest extends Request {
+  user?: UsuarioIdentidade;
+}
+
+export const lerIdentidade = (
   req: AuthenticatedRequest,
-  res: Response,
+  _res: Response,
   next: NextFunction
 ) => {
-  const authHeader = req.headers.authorization;
+  const id = req.header("x-user-id");
+  const email = req.header("x-user-email");
+  const perfil = req.header("x-user-role");
 
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    throw new UnauthorizedError("Token não fornecido.");
+  if (!id || !email || (perfil !== "cliente" && perfil !== "admin")) {
+    throw new UnauthorizedError("Identidade ausente. Acesse pelo gateway.");
   }
 
-  const token = authHeader.split(" ")[1];
-
-  try {
-    const decoded = verifyJWTToken(token);
-    req.user = decoded;
-    next();
-  } catch (error) {
-    throw new UnauthorizedError("Token inválido ou expirado.");
-  }
-};
-
-export const requireRoles = (roles: ("cliente" | "admin")[]) => {
-  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    if (!req.user) {
-      throw new UnauthorizedError("Usuário não autenticado.");
-    }
-
-    if (!roles.includes(req.user.perfil)) {
-      throw new ForbiddenError(
-        "Acesso negado: permissão insuficiente para esta ação."
-      );
-    }
-
-    next();
-  };
+  req.user = { id, email, perfil };
+  next();
 };

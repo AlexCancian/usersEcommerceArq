@@ -21,7 +21,7 @@ router.get(
   }
 );
 
-// POST /categorias - Criação de categoria (Admin - aberta conforme slide 8)
+// POST /categorias - Criação de categoria (admin: o Kong exige jwt + acl allow [admin])
 router.post(
   "/",
   validate(createCategoriaSchema),

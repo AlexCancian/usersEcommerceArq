@@ -89,5 +89,7 @@ export const queryProdutoSchema = z.object({
   query: z.object({
     categoria: z.string().optional(),
     busca: z.string().optional(),
+    // Busca em lote usada pelo serviço pedidos: ?ids=a,b,c (ObjectId ou SKU)
+    ids: z.string().min(1, "ids não pode ser vazio.").optional(),
   }),
 });

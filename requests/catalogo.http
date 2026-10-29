@@ -1,27 +1,57 @@
 ### ==============================================================================
-### E-Commerce - Microsserviço de Catálogo (REST Client)
-### Porta: 3002 | Base URL: http://localhost:3002
+### E-Commerce - Catálogo pelo API Gateway (REST Client)
+### Uma URL só: a do gateway (Kong). As portas dos serviços não são publicadas.
+### GET é público; POST/PUT/PATCH/DELETE exigem token com perfil admin.
 ### ==============================================================================
 
-@baseUrl = http://localhost:3002
+@baseUrl = http://localhost:8080
+
+### ------------------------------------------------------------------------------
+### 0. LOGINS (tokens usados nas rotas de admin)
+### ------------------------------------------------------------------------------
+
+### 0.1 Login como Administrador
+# @name loginAdmin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@loja.com",
+  "senha": "admin123"
+}
+
+@tokenAdmin = {{loginAdmin.response.body.token}}
+
+### 0.2 Login como Cliente
+# @name loginCliente
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "cliente@loja.com",
+  "senha": "cliente123"
+}
+
+@tokenCliente = {{loginCliente.response.body.token}}
 
 ### ------------------------------------------------------------------------------
 ### 1. HEALTH CHECK
 ### ------------------------------------------------------------------------------
 
-### 1.1 Health Check (Público)
-GET {{baseUrl}}/health
+### 1.1 Health Check (Público) - no gateway: /health/catalogo
+GET {{baseUrl}}/health/catalogo
 
 ### ------------------------------------------------------------------------------
 ### 2. CATEGORIAS (/categorias)
 ### ------------------------------------------------------------------------------
 
-### 2.1 Listar Todas as Categorias (Sucesso 200)
+### 2.1 Listar Todas as Categorias (Sucesso 200 - público)
 GET {{baseUrl}}/categorias
 
-### 2.2 Criar Nova Categoria (Sucesso 201)
+### 2.2 Criar Nova Categoria como Admin (Sucesso 201)
 # @name novaCategoria
 POST {{baseUrl}}/categorias
+Authorization: Bearer {{tokenAdmin}}
 Content-Type: application/json
 
 {
@@ -29,8 +59,28 @@ Content-Type: application/json
   "slug": "games-consoles"
 }
 
-### 2.3 Tentativa de Categoria com Slug Duplicado (Erro 409 Conflict)
+### 2.3 Criar Categoria Sem Token (Erro 401 - Kong)
 POST {{baseUrl}}/categorias
+Content-Type: application/json
+
+{
+  "nome": "Sem Token",
+  "slug": "sem-token"
+}
+
+### 2.4 Criar Categoria como Cliente (Erro 403 - Kong acl)
+POST {{baseUrl}}/categorias
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "nome": "Cliente Tentando",
+  "slug": "cliente-tentando"
+}
+
+### 2.5 Categoria com Slug Duplicado (Erro 409 Conflict)
+POST {{baseUrl}}/categorias
+Authorization: Bearer {{tokenAdmin}}
 Content-Type: application/json
 
 {
@@ -38,8 +88,9 @@ Content-Type: application/json
   "slug": "celulares"
 }
 
-### 2.4 Tentativa com Dados Inválidos (Erro 400 Bad Request)
+### 2.6 Categoria com Dados Inválidos (Erro 400 Bad Request)
 POST {{baseUrl}}/categorias
+Authorization: Bearer {{tokenAdmin}}
 Content-Type: application/json
 
 {
@@ -51,18 +102,22 @@ Content-Type: application/json
 ### 3. PRODUTOS (/produtos)
 ### ------------------------------------------------------------------------------
 
-### 3.1 Listar Todos os Produtos Ativos (Sucesso 200)
+### 3.1 Listar Todos os Produtos Ativos (Sucesso 200 - público)
 GET {{baseUrl}}/produtos
 
-### 3.2 Listar Produtos Ativos com Filtro de Categoria e Busca (Sucesso 200)
+### 3.2 Listar com Filtro de Categoria e Busca (Sucesso 200)
 GET {{baseUrl}}/produtos?categoria=celulares&busca=Smartphone
 
 ### 3.3 Listar Produtos da Categoria Livros (Sucesso 200)
 GET {{baseUrl}}/produtos?categoria=livros
 
-### 3.4 Cadastrar Novo Produto com Atributos Flexíveis (Sucesso 201)
+### 3.4 Busca em lote por SKU/ID (a mesma usada pelo serviço pedidos)
+GET {{baseUrl}}/produtos?ids=CEL-001,CAM-010
+
+### 3.5 Cadastrar Novo Produto como Admin (Sucesso 201)
 # @name novoProduto
 POST {{baseUrl}}/produtos
+Authorization: Bearer {{tokenAdmin}}
 Content-Type: application/json
 
 {
@@ -86,8 +141,35 @@ Content-Type: application/json
 ### Extração do ID do Produto Criado
 @produtoId = {{novoProduto.response.body._id}}
 
-### 3.5 Tentativa com SKU Já Existente (Erro 409 Conflict)
+### 3.6 Cliente Criando Produto (Erro 403 - Kong acl)
 POST {{baseUrl}}/produtos
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "sku": "HACK-001",
+  "nome": "Produto do Cliente",
+  "categoria": "roupas",
+  "preco": 1.00,
+  "estoque": { "disponivel": 1, "reservado": 0 }
+}
+
+### 3.7 Criar Produto Sem Token, Fingindo ser Admin (Erro 401 - Kong)
+POST {{baseUrl}}/produtos
+X-User-Role: admin
+Content-Type: application/json
+
+{
+  "sku": "HACK-002",
+  "nome": "Produto Sem Token",
+  "categoria": "roupas",
+  "preco": 1.00,
+  "estoque": { "disponivel": 1, "reservado": 0 }
+}
+
+### 3.8 SKU Já Existente (Erro 409 Conflict)
+POST {{baseUrl}}/produtos
+Authorization: Bearer {{tokenAdmin}}
 Content-Type: application/json
 
 {
@@ -101,8 +183,9 @@ Content-Type: application/json
   }
 }
 
-### 3.6 Tentativa com Preço Negativo (Erro 400 Bad Request)
+### 3.9 Preço Negativo (Erro 400 Bad Request)
 POST {{baseUrl}}/produtos
+Authorization: Bearer {{tokenAdmin}}
 Content-Type: application/json
 
 {
@@ -116,14 +199,15 @@ Content-Type: application/json
   }
 }
 
-### 3.7 Buscar Produto por ID ou SKU (Sucesso 200)
+### 3.10 Buscar Produto por ID ou SKU (Sucesso 200 - público)
 GET {{baseUrl}}/produtos/{{produtoId}}
 
-### 3.8 Buscar Produto Inexistente (Erro 404 Not Found)
+### 3.11 Buscar Produto Inexistente (Erro 404 Not Found)
 GET {{baseUrl}}/produtos/64b1f234567890abcdef1234
 
-### 3.9 Atualizar Dados do Produto (Sucesso 200)
+### 3.12 Atualizar Dados do Produto como Admin (Sucesso 200)
 PUT {{baseUrl}}/produtos/{{produtoId}}
+Authorization: Bearer {{tokenAdmin}}
 Content-Type: application/json
 
 {
@@ -137,8 +221,9 @@ Content-Type: application/json
   }
 }
 
-### 3.10 Ajustar Estoque do Produto (Sucesso 200)
+### 3.13 Ajustar Estoque como Admin (Sucesso 200)
 PATCH {{baseUrl}}/produtos/{{produtoId}}/estoque
+Authorization: Bearer {{tokenAdmin}}
 Content-Type: application/json
 
 {
@@ -146,16 +231,23 @@ Content-Type: application/json
   "reservado": 3
 }
 
-### 3.11 Tentativa de Estoque Negativo (Erro 400 Bad Request)
+### 3.14 Estoque Negativo (Erro 400 Bad Request)
 PATCH {{baseUrl}}/produtos/{{produtoId}}/estoque
+Authorization: Bearer {{tokenAdmin}}
 Content-Type: application/json
 
 {
   "disponivel": -10
 }
 
-### 3.12 Desativar Produto - Soft Delete (Sucesso 204 No Content)
+### 3.15 Desativar Produto como Admin - Soft Delete (Sucesso 204 No Content)
 DELETE {{baseUrl}}/produtos/{{produtoId}}
+Authorization: Bearer {{tokenAdmin}}
 
-### 3.13 Desativar Produto Inexistente (Erro 404 Not Found)
+### 3.16 Desativar Produto como Cliente (Erro 403 - Kong acl)
+DELETE {{baseUrl}}/produtos/{{produtoId}}
+Authorization: Bearer {{tokenCliente}}
+
+### 3.17 Desativar Produto Inexistente (Erro 404 Not Found)
 DELETE {{baseUrl}}/produtos/64b1f234567890abcdef1234
+Authorization: Bearer {{tokenAdmin}}

@@ -22,7 +22,7 @@ app.use((req, res) => {
 // Middleware global de tratamento de erros padronizado
 app.use(errorHandler);
 
-const PORT = env.PORT || 3001;
+const PORT = env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log(`🚀 Servidor de usuários rodando na porta ${PORT}`);
