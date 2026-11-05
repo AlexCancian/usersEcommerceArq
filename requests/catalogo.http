@@ -20,7 +20,8 @@ Content-Type: application/json
   "senha": "admin123"
 }
 
-@tokenAdmin = {{loginAdmin.response.body.token}}
+### Extração do Token do Administrador
+@tokenAdmin ={{loginAdmin.response.body.token}}
 
 ### 0.2 Login como Cliente
 # @name loginCliente
@@ -32,7 +33,8 @@ Content-Type: application/json
   "senha": "cliente123"
 }
 
-@tokenCliente = {{loginCliente.response.body.token}}
+### Extração do Token do Cliente
+@tokenCliente ={{loginCliente.response.body.token}}
 
 ### ------------------------------------------------------------------------------
 ### 1. HEALTH CHECK

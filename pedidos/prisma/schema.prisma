@@ -27,16 +27,17 @@ model CarrinhoItem {
 }
 
 model Pedido {
-  id               String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  usuario_id       String       @db.Uuid
-  cliente_email    String       @db.Text
-  status           StatusPedido @default(AGUARDANDO_ESTOQUE)
-  valor_total      Decimal      @db.Decimal(12, 2)
-  endereco_entrega Json         @db.JsonB
-  forma_pagamento  String       @db.Text
-  cartao_final     String?      @db.Text // só os 4 últimos dígitos
-  criado_em        DateTime     @default(now()) @db.Timestamptz
-  itens            ItemPedido[]
+  id                  String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuario_id          String       @db.Uuid
+  cliente_email       String       @db.Text
+  status              StatusPedido @default(AGUARDANDO_ESTOQUE)
+  valor_total         Decimal      @db.Decimal(12, 2)
+  endereco_entrega    Json         @db.JsonB
+  forma_pagamento     String       @db.Text
+  cartao_final        String?      @db.Text // só os 4 últimos dígitos
+  motivo_cancelamento String?      @db.Text // aula 08: preenchido só por estoque.insuficiente
+  criado_em           DateTime     @default(now()) @db.Timestamptz
+  itens               ItemPedido[]
 
   @@map("pedidos")
 }

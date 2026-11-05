@@ -88,3 +88,39 @@ export const softDeleteProdutoById = async (
 
   return Produto.findOneAndUpdate(filter, { ativo: false }, { new: true });
 };
+
+// ---- Aula 08: reserva de estoque por evento
+
+// Só tira se houver: o $gte no filtro garante que dois pedidos ao mesmo tempo não
+// deixam o estoque negativo. _id inválido vira "não reservou" (sem CastError em loop).
+export const reservarEstoque = async (
+  produtoId: string,
+  quantidade: number
+): Promise<boolean> => {
+  if (!mongoose.Types.ObjectId.isValid(produtoId)) return false;
+
+  const resultado = await Produto.updateOne(
+    { _id: produtoId, "estoque.disponivel": { $gte: quantidade } },
+    { $inc: { "estoque.disponivel": -quantidade, "estoque.reservado": quantidade } }
+  );
+  return resultado.modifiedCount === 1;
+};
+
+// Compensação: devolve só o que já foi reservado neste pedido.
+export const devolverEstoque = async (
+  produtoId: string,
+  quantidade: number
+): Promise<void> => {
+  await Produto.updateOne(
+    { _id: produtoId },
+    { $inc: { "estoque.disponivel": quantidade, "estoque.reservado": -quantidade } }
+  );
+};
+
+// null: produto não existe (ou _id inválido). Usado só no caminho de falha, para o motivo.
+export const buscarDisponivel = async (produtoId: string): Promise<number | null> => {
+  if (!mongoose.Types.ObjectId.isValid(produtoId)) return null;
+
+  const produto = await Produto.findById(produtoId).select("estoque.disponivel").lean();
+  return produto ? produto.estoque.disponivel : null;
+};

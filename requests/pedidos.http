@@ -1,6 +1,8 @@
 ### ==============================================================================
 ### E-Commerce - Pedidos pelo API Gateway (REST Client)
 ### Fluxo: login → adicionar ao carrinho → ver carrinho → checkout (202) → consultar pedido
+### Aula 08: depois do 202 o pedido anda sozinho por eventos (Kafka): AGUARDANDO_ESTOQUE →
+### AGUARDANDO_PAGAMENTO (estoque reservado) ou CANCELADO (estoque insuficiente, com motivo_cancelamento).
 ### Todas as rotas de carrinho e pedidos são "logado" (jwt no Kong).
 ### ==============================================================================
 
@@ -23,7 +25,8 @@ Content-Type: application/json
   "senha": "cliente123"
 }
 
-@tokenCliente = {{loginCliente.response.body.token}}
+### Extração do Token do Cliente
+@tokenCliente ={{loginCliente.response.body.token}}
 
 ### 0.3 Login como Administrador (usado como "outro usuário")
 # @name loginAdmin
@@ -35,12 +38,14 @@ Content-Type: application/json
   "senha": "admin123"
 }
 
-@tokenAdmin = {{loginAdmin.response.body.token}}
+### Extração do Token do Administrador
+@tokenAdmin ={{loginAdmin.response.body.token}}
 
 ### 0.4 Vitrine: pega dois produtos do seed para usar no carrinho
 # @name vitrine
 GET {{baseUrl}}/produtos?ids=CEL-001,CAM-010
 
+### Extração dos IDs dos produtos
 @produtoA = {{vitrine.response.body.$[0]._id}}
 @produtoB = {{vitrine.response.body.$[1]._id}}
 
@@ -125,7 +130,8 @@ Content-Type: application/json
   "numero_cartao": "4111111111111111"
 }
 
-@pedidoId = {{checkout.response.body.id}}
+### Extração do ID do Pedido
+@pedidoId ={{checkout.response.body.id}}
 
 ### 2.2 Checkout com Carrinho Vazio (Erro 400 - o 2.1 esvaziou o carrinho)
 POST {{baseUrl}}/pedidos
@@ -231,3 +237,122 @@ Authorization: Bearer {{tokenCliente}}
 ### 5.4 Meus Pedidos com o Catálogo Fora (Sucesso 200)
 GET {{baseUrl}}/pedidos
 Authorization: Bearer {{tokenCliente}}
+
+### ------------------------------------------------------------------------------
+### 6. CAMINHO FELIZ POR EVENTOS (aula 08)
+### ------------------------------------------------------------------------------
+### Como acompanhar (ferramentas locais, só para desenvolvimento):
+###   - Kafka UI: http://localhost:8090 -> tópicos "pedidos" e "estoque" (mesma key = id do pedido),
+###     grupos (pedidos, catalogo, notificacoes) e lag
+###   - Mailpit: http://localhost:8025 -> os e-mails enviados pelo serviço de notificações
+###   - Logs de uma compra inteira, pelo correlationId (header X-Request-Id devolvido pelo Kong
+###     na resposta do checkout):
+###       docker compose logs pedidos catalogo notificacoes | grep <correlationId>
+###     No PowerShell:
+###       docker compose logs pedidos catalogo notificacoes | Select-String <correlationId>
+
+### 6.1 Estoque do Produto A ANTES (anote disponivel e reservado)
+GET {{baseUrl}}/produtos/{{produtoA}}
+
+### 6.2 Adicionar Produto A ao Carrinho (Sucesso 201)
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "produto_id": "{{produtoA}}",
+  "quantidade": 1
+}
+
+### 6.3 Checkout (Sucesso 202 - AGUARDANDO_ESTOQUE, motivo_cancelamento null)
+# @name checkoutEvento
+POST {{baseUrl}}/pedidos
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "endereco_entrega": {
+    "cep": "01310-100",
+    "logradouro": "Avenida Paulista",
+    "numero": "1578",
+    "cidade": "São Paulo",
+    "uf": "SP"
+  },
+  "forma_pagamento": "pix"
+}
+
+### Extração do ID do Pedido
+@pedidoEvento ={{checkoutEvento.response.body.id}}
+
+### 6.4 Reenvie até mudar (Sucesso 200 - AGUARDANDO_PAGAMENTO, o catálogo reservou)
+GET {{baseUrl}}/pedidos/{{pedidoEvento}}
+Authorization: Bearer {{tokenCliente}}
+
+### 6.5 Estoque do Produto A DEPOIS (disponivel diminuiu e reservado aumentou na quantidade do pedido;
+###     se sobrou item no carrinho da seção 5, ele também entrou neste pedido)
+GET {{baseUrl}}/produtos/{{produtoA}}
+
+### 6.6 Mailpit (http://localhost:8025): e-mail "Recebemos o seu pedido"
+
+### ------------------------------------------------------------------------------
+### 7. SEM ESTOQUE (aula 08)
+### ------------------------------------------------------------------------------
+### O Celular Básico (CEL-005) tem só 2 unidades no seed: o pedido de 3 é cancelado pelo catálogo.
+
+### 7.1 Buscar o Celular Básico (estoque.disponivel = 2)
+# @name celularBasico
+GET {{baseUrl}}/produtos?ids=CEL-005
+
+### Extração do ID do produto
+@produtoSemEstoque = {{celularBasico.response.body.$[0]._id}}
+
+### 7.2 Adicionar 3 Unidades ao Carrinho (Sucesso 201 - o carrinho não confere estoque)
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "produto_id": "{{produtoSemEstoque}}",
+  "quantidade": 3
+}
+
+### 7.3 Checkout (Sucesso 202 - AGUARDANDO_ESTOQUE: o checkout não recusa mais por estoque)
+# @name checkoutSemEstoque
+POST {{baseUrl}}/pedidos
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "endereco_entrega": {
+    "cep": "01310-100",
+    "logradouro": "Avenida Paulista",
+    "numero": "1578",
+    "cidade": "São Paulo",
+    "uf": "SP"
+  },
+  "forma_pagamento": "pix"
+}
+
+### Extração do ID do Pedido
+@pedidoSemEstoque ={{checkoutSemEstoque.response.body.id}}
+
+### 7.4 Reenvie até mudar (Sucesso 200 - CANCELADO)
+### motivo_cancelamento: "Estoque insuficiente para Celular Básico (pedido: 3, disponível: 2)."
+GET {{baseUrl}}/pedidos/{{pedidoSemEstoque}}
+Authorization: Bearer {{tokenCliente}}
+
+### 7.5 Estoque intacto (disponivel 2, reservado 0 - tudo ou nada)
+GET {{baseUrl}}/produtos/{{produtoSemEstoque}}
+
+### 7.6 Cancelar o Pedido já Cancelado (Erro 409 - status CANCELADO não permite)
+POST {{baseUrl}}/pedidos/{{pedidoSemEstoque}}/cancelar
+Authorization: Bearer {{tokenCliente}}
+
+### 7.7 Mailpit (http://localhost:8025): "Recebemos o seu pedido" e
+###     "Seu pedido foi cancelado: produto sem estoque"
+
+### 7.8 (Opcional) Notificações fora, a loja continua
+###   a) no terminal: docker compose stop notificacoes
+###   b) rode o 7.2, o 7.3 e o 7.4 -> o pedido cancela normalmente
+###   c) no terminal: docker compose start notificacoes
+###   d) os e-mails pendentes chegam ao Mailpit (o grupo continua do offset)

@@ -33,5 +33,6 @@ ENV PORT=3000
 
 EXPOSE 3000
 
-# Seed idempotente (3 categorias e 10 produtos) antes de subir a API.
-CMD ["sh", "-c", "npm run seed && node dist/index.js"]
+# Seed idempotente (3 categorias e 11 produtos) antes de subir a API.
+# exec: o Node vira o PID 1 e recebe o SIGTERM (desconecta do Kafka com calma).
+CMD ["sh", "-c", "npm run seed && exec node dist/index.js"]

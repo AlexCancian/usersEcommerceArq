@@ -6,4 +6,9 @@ export const env = {
   NODE_ENV: process.env.NODE_ENV || "development",
   MONGO_URI:
     process.env.MONGO_URI || "mongodb://localhost:27017/ecommerce_catalogo",
+  // Kafka (aula 08): lista separada por vírgula
+  KAFKA_BROKERS: (process.env.KAFKA_BROKERS || "kafka:9092")
+    .split(",")
+    .map((b) => b.trim())
+    .filter(Boolean),
 };

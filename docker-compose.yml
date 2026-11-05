@@ -1,5 +1,6 @@
 # Aula 07: só o gateway publica portas. Serviços e bancos ficam na rede interna
 # (ecommerce-net); os nomes usuarios, catalogo e pedidos são o DNS dessa rede.
+# Aula 08: exceções de porta para ferramentas locais, Kafka UI (8090) e Mailpit (8025) (ADR 007).
 services:
   # ------------------------------------------------------------- API Gateway
   gateway:
@@ -87,12 +88,17 @@ services:
       dockerfile: Dockerfile
     container_name: ecommerce-catalogo
     restart: unless-stopped
+    stop_grace_period: 10s
     environment:
       PORT: 3000
       NODE_ENV: production
       MONGO_URI: mongodb://mongo-catalogo:27017/ecommerce_catalogo
+      KAFKA_BROKERS: kafka:9092
     depends_on:
-      - mongo-catalogo
+      mongo-catalogo:
+        condition: service_started
+      kafka:
+        condition: service_healthy
     networks:
       - ecommerce-net
 
@@ -121,16 +127,103 @@ services:
       dockerfile: Dockerfile
     container_name: ecommerce-pedidos
     restart: unless-stopped
+    stop_grace_period: 10s
     environment:
       PORT: 3000
       NODE_ENV: production
       DATABASE_URL: postgresql://postgres:postgres@postgres-pedidos:5432/ecommerce_pedidos?schema=public
       # Chamada síncrona direta pela rede interna, sem passar pelo gateway
       CATALOGO_URL: http://catalogo:3000
+      KAFKA_BROKERS: kafka:9092
     depends_on:
       postgres-pedidos:
         condition: service_healthy
       catalogo:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecommerce-net
+
+  # ------------------------------------------------------------------- kafka
+  # Aula 08: um broker KRaft (broker + controller), fator 1. Sem porta publicada:
+  # só a rede interna fala com ele.
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: ecommerce-kafka
+    restart: unless-stopped
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - ecommerce-net
+
+  # Painel do Kafka (tópicos, mensagens, grupos e lag). Exceção de porta: ADR 007.
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.1.0
+    container_name: ecommerce-kafka-ui
+    restart: unless-stopped
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - ecommerce-net
+
+  # ------------------------------------------------------------ notificacoes
+  # SMTP de mentira: recebe tudo na 1025 (interna) e mostra em localhost:8025. Exceção de porta: ADR 007.
+  mailpit:
+    image: axllent/mailpit
+    container_name: ecommerce-mailpit
+    restart: unless-stopped
+    ports:
+      - "8025:8025"
+    networks:
+      - ecommerce-net
+
+  # Só escuta eventos: sem banco, sem rota no Kong, sem porta.
+  notificacoes:
+    build:
+      context: ./notificacoes
+      dockerfile: Dockerfile
+    container_name: ecommerce-notificacoes
+    restart: unless-stopped
+    stop_grace_period: 10s
+    environment:
+      NODE_ENV: production
+      KAFKA_BROKERS: kafka:9092
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      MAIL_FROM: "Loja <nao-responda@loja.com>"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mailpit:
         condition: service_started
     networks:
       - ecommerce-net
@@ -139,6 +232,7 @@ volumes:
   postgres_usuarios_data:
   mongo_catalogo_data:
   postgres_pedidos_data:
+  kafka_data:
 
 networks:
   ecommerce-net:

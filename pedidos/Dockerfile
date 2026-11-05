@@ -39,4 +39,5 @@ ENV PORT=3000
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+# exec: o Node vira o PID 1 e recebe o SIGTERM (desconecta do Kafka com calma).
+CMD ["sh", "-c", "npx prisma migrate deploy && exec node dist/index.js"]

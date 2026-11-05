@@ -9,6 +9,7 @@ const pedidoSelect = {
   endereco_entrega: true,
   forma_pagamento: true,
   cartao_final: true,
+  motivo_cancelamento: true,
   criado_em: true,
   itens: {
     select: {
@@ -82,6 +83,23 @@ export const buscarPedidoDoUsuario = async (
     where: { id, usuario_id: usuarioId },
     select: pedidoSelect,
   });
+};
+
+// Filtro de estado (aula 08): só muda se o pedido ainda estiver num dos status de origem.
+// Evento repetido ou atrasado devolve count 0 e não leva o pedido para trás.
+export const mudarStatusDoPedido = async (
+  id: string,
+  novoStatus: StatusPedido,
+  statusOrigem: StatusPedido[],
+  motivo?: string
+): Promise<number> => {
+  const resultado = await prisma.pedido.updateMany({
+    where: { id, status: { in: statusOrigem } },
+    data: motivo === undefined
+      ? { status: novoStatus }
+      : { status: novoStatus, motivo_cancelamento: motivo },
+  });
+  return resultado.count;
 };
 
 // Atualização condicional: só cancela se o status ainda permitir no momento da escrita.

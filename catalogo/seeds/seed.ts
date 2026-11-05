@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import { env } from "../src/config/env.js";
 import { Categoria } from "../src/models/categoria.model.js";
 import { Produto } from "../src/models/produto.model.js";
+import { Reserva } from "../src/models/reserva.model.js";
 
 async function runSeed() {
   console.log("🌱 Conectando ao MongoDB para execução do seed do catálogo...");
@@ -10,6 +11,7 @@ async function runSeed() {
   console.log("📂 Sincronizando índices do Mongoose...");
   await Categoria.syncIndexes();
   await Produto.syncIndexes();
+  await Reserva.syncIndexes();
 
   // 1. As 3 Categorias Obrigatórias (Slide 2)
   const categoriasData = [
@@ -84,6 +86,21 @@ async function runSeed() {
         tipo: "dobrável",
       },
       estoque: { disponivel: 5, reservado: 0 },
+    },
+    {
+      sku: "CEL-005",
+      nome: "Celular Básico",
+      categoria: "celulares",
+      preco: 999.9,
+      ativo: true,
+      atributos: {
+        memoria: "32GB",
+        cor: "preto",
+        tela: "5.5 polegadas",
+        conectividade: "4G",
+      },
+      // Aula 08, slide "TESTANDO O FLUXO": só 2 unidades, para o pedido de 3 dar estoque.insuficiente.
+      estoque: { disponivel: 2, reservado: 0 },
     },
 
     // --- ROUPAS (atributos: tamanho, tecido, cor, corte) ---
@@ -174,7 +191,7 @@ async function runSeed() {
     },
   ];
 
-  console.log("🛍️ Inserindo/Atualizando 10 produtos com atributos dinâmicos (idempotente)...");
+  console.log("🛍️ Inserindo/Atualizando 11 produtos com atributos dinâmicos (idempotente)...");
   for (const prod of produtosData) {
     await Produto.findOneAndUpdate(
       { sku: prod.sku },
