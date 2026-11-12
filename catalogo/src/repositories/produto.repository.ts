@@ -117,6 +117,22 @@ export const devolverEstoque = async (
   );
 };
 
+// Aula 09: pagamento aprovado. A unidade vendida sai do reservado (o disponível não muda).
+export const confirmarSaidaDoEstoque = async (
+  produtoId: string,
+  quantidade: number
+): Promise<void> => {
+  await Produto.updateOne({ _id: produtoId }, { $inc: { "estoque.reservado": -quantidade } });
+};
+
+// Aula 09: compensação de uma reserva já confirmada (o reservado já tinha baixado): volta só ao disponível.
+export const devolverAoDisponivel = async (
+  produtoId: string,
+  quantidade: number
+): Promise<void> => {
+  await Produto.updateOne({ _id: produtoId }, { $inc: { "estoque.disponivel": quantidade } });
+};
+
 // null: produto não existe (ou _id inválido). Usado só no caminho de falha, para o motivo.
 export const buscarDisponivel = async (produtoId: string): Promise<number | null> => {
   if (!mongoose.Types.ObjectId.isValid(produtoId)) return null;

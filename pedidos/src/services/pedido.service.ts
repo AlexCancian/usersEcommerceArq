@@ -15,7 +15,7 @@ import {
 } from "../repositories/pedido.repository.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../utils/errors.js";
 import { CheckoutDTO } from "../utils/schemas.js";
-import { PedidoCriadoDados, TIPOS, TOPICOS } from "../utils/eventos.js";
+import { PedidoCanceladoDados, PedidoCriadoDados, TIPOS, TOPICOS } from "../utils/eventos.js";
 import { UsuarioIdentidade } from "../middleware/auth.js";
 
 // Status em que o pedido ainda pode ser cancelado
@@ -165,6 +165,51 @@ export const cancelarPorEstoqueInsuficienteService = async (
   );
 };
 
+// ---- Aula 09: reações ao pagamento (tópico pagamentos)
+
+// pagamento.aprovado: PAGO só a partir de AGUARDANDO_PAGAMENTO.
+// Um pedido CANCELADO não volta a PAGO porque o banco aprovou atrasado (quem estorna é o pagamentos).
+export const confirmarPagamentoService = async (
+  pedidoId: string,
+  correlationId: string
+): Promise<void> => {
+  const alterados = await mudarStatusDoPedido(pedidoId, StatusPedido.PAGO, [
+    StatusPedido.AGUARDANDO_PAGAMENTO,
+  ]);
+
+  if (alterados === 0) {
+    console.log(
+      `[correlationId=${correlationId}] pagamento.aprovado ignorado pedidoId=${pedidoId} (repetido ou status já mudou)`
+    );
+    return;
+  }
+  console.log(`[correlationId=${correlationId}] recebido pagamento.aprovado pedidoId=${pedidoId} → PAGO`);
+};
+
+// COMPENSAÇÃO: pagamento.recusado (recusa do banco ou banco fora) → CANCELADO com o motivo.
+export const cancelarPorPagamentoRecusadoService = async (
+  pedidoId: string,
+  motivo: string,
+  correlationId: string
+): Promise<void> => {
+  const alterados = await mudarStatusDoPedido(
+    pedidoId,
+    StatusPedido.CANCELADO,
+    [StatusPedido.AGUARDANDO_ESTOQUE, StatusPedido.AGUARDANDO_PAGAMENTO],
+    `Pagamento recusado: ${motivo}`.slice(0, 500)
+  );
+
+  if (alterados === 0) {
+    console.log(
+      `[correlationId=${correlationId}] pagamento.recusado ignorado pedidoId=${pedidoId} (repetido ou status já mudou)`
+    );
+    return;
+  }
+  console.log(
+    `[correlationId=${correlationId}] COMPENSAÇÃO: pagamento.recusado pedidoId=${pedidoId} → CANCELADO (${motivo})`
+  );
+};
+
 export const listarPedidosService = async (usuarioId: string): Promise<PedidoComItens[]> => {
   return listarPedidosDoUsuario(usuarioId);
 };
@@ -185,20 +230,53 @@ export const buscarPedidoService = async (
   return pedido;
 };
 
-// POST /pedidos/:id/cancelar: 200 cancelado · 409 status não permite
+const MOTIVO_CANCELADO_PELO_CLIENTE = "Cancelado pelo cliente.";
+
+// POST /pedidos/:id/cancelar: 200 cancelado · 404 não é seu · 409 status não permite (ex.: PAGO).
+// Aula 09: publica pedido.cancelado. O catálogo devolve o estoque e o pagamentos
+// estorna o que já cobrou ou bloqueia a cobrança futura.
 export const cancelarPedidoService = async (
   id: string,
-  usuarioId: string
+  usuarioId: string,
+  requestId?: string
 ): Promise<PedidoComItens> => {
+  const correlationId = requestId ?? randomUUID();
   const pedido = await buscarPedidoService(id, usuarioId);
 
   if (!STATUS_CANCELAVEIS.includes(pedido.status)) {
     throw new ConflictError(`Pedido com status ${pedido.status} não pode ser cancelado.`);
   }
 
-  const alterados = await cancelarPedidoDoUsuario(id, usuarioId, STATUS_CANCELAVEIS);
+  const alterados = await cancelarPedidoDoUsuario(
+    id,
+    usuarioId,
+    STATUS_CANCELAVEIS,
+    MOTIVO_CANCELADO_PELO_CLIENTE
+  );
   if (alterados === 0) {
     throw new ConflictError("O status do pedido mudou e ele não pode mais ser cancelado.");
+  }
+
+  // Publica depois do commit. Falha do Kafka não desfaz o cancelamento (mesma regra do checkout, D04):
+  // log com o correlationId para reprocesso manual (limitação conhecida: sem Outbox).
+  try {
+    await publicar<PedidoCanceladoDados>(
+      TOPICOS.PEDIDOS,
+      TIPOS.PEDIDO_CANCELADO,
+      id,
+      {
+        usuarioId,
+        clienteEmail: pedido.cliente_email,
+        valorTotal: pedido.valor_total.toNumber(),
+        motivo: MOTIVO_CANCELADO_PELO_CLIENTE,
+      },
+      correlationId
+    );
+  } catch (erro) {
+    console.error(
+      `[correlationId=${correlationId}] falha ao publicar pedido.cancelado pedidoId=${id} (pedido CANCELADO, mas estoque e pagamento não foram avisados):`,
+      erro
+    );
   }
 
   return buscarPedidoService(id, usuarioId);

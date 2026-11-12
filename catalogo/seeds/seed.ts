@@ -193,9 +193,12 @@ async function runSeed() {
 
   console.log("🛍️ Inserindo/Atualizando 11 produtos com atributos dinâmicos (idempotente)...");
   for (const prod of produtosData) {
+    // Estoque só na criação ($setOnInsert): reiniciar o container não pode zerar o reservado
+    // nem desfazer reservas e compensações feitas pelos eventos (Kafka).
+    const { estoque, ...dadosProduto } = prod;
     await Produto.findOneAndUpdate(
       { sku: prod.sku },
-      { $set: prod },
+      { $set: dadosProduto, $setOnInsert: { estoque } },
       { upsert: true, new: true }
     );
     console.log(`  ✓ Produto pronto: [${prod.sku}] ${prod.nome} (${prod.categoria})`);

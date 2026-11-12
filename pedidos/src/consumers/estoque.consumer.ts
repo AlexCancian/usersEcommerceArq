@@ -1,4 +1,5 @@
 import { iniciarConsumer } from "../config/kafka.js";
+import { handlersPagamentos } from "./pagamentos.consumer.js";
 import {
   cancelarPorEstoqueInsuficienteService,
   confirmarEstoqueReservadoService,
@@ -57,9 +58,11 @@ async function aoFaltarEstoque(evento: EnvelopeRecebido): Promise<void> {
 }
 
 // groupId = nome do serviço: réplicas dividem as partições sozinhas.
+// Aula 09: o mesmo consumer também escuta o tópico pagamentos (aprovado → PAGO, recusado → CANCELADO).
 export async function iniciarConsumerEstoque(): Promise<void> {
-  await iniciarConsumer("pedidos", [TOPICOS.ESTOQUE], {
+  await iniciarConsumer("pedidos", [TOPICOS.ESTOQUE, TOPICOS.PAGAMENTOS], {
     [TIPOS.ESTOQUE_RESERVADO]: aoReservar,
     [TIPOS.ESTOQUE_INSUFICIENTE]: aoFaltarEstoque,
+    ...handlersPagamentos,
   });
 }

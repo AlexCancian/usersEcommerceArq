@@ -1,6 +1,7 @@
 # Aula 07: só o gateway publica portas. Serviços e bancos ficam na rede interna
 # (ecommerce-net); os nomes usuarios, catalogo e pedidos são o DNS dessa rede.
 # Aula 08: exceções de porta para ferramentas locais, Kafka UI (8090) e Mailpit (8025) (ADR 007).
+# Aula 09: pagamentos (+ pagamentos-db) e o banco-falso, o banco do cartão (sistema externo) na 9000 (ADR 009).
 services:
   # ------------------------------------------------------------- API Gateway
   gateway:
@@ -32,6 +33,7 @@ services:
       - usuarios
       - catalogo
       - pedidos
+      - pagamentos
     networks:
       - ecommerce-net
 
@@ -228,10 +230,73 @@ services:
     networks:
       - ecommerce-net
 
+  # -------------------------------------------------------------- pagamentos
+  postgres-pagamentos:
+    image: postgres:16-alpine
+    container_name: ecommerce-postgres-pagamentos
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ecommerce_pagamentos
+    volumes:
+      - postgres_pagamentos_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ecommerce_pagamentos"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ecommerce-net
+
+  # Sem ports: só o gateway o alcança (rotas /pagamentos no kong.yml).
+  pagamentos:
+    build:
+      context: ./pagamentos
+      dockerfile: Dockerfile
+    container_name: ecommerce-pagamentos
+    restart: unless-stopped
+    stop_grace_period: 10s
+    environment:
+      PORT: 3000
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:postgres@postgres-pagamentos:5432/ecommerce_pagamentos?schema=public
+      KAFKA_BROKERS: kafka:9092
+      # Chamada direta pela rede interna ao banco do cartão (timeout, retry e circuit breaker)
+      BANCO_URL: http://banco-falso:3000
+    depends_on:
+      postgres-pagamentos:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      banco-falso:
+        condition: service_started
+    networks:
+      - ecommerce-net
+
+  # O banco do cartão: sistema externo simulado, sem banco de dados. Fora do Kong, porta própria
+  # para mudar latência e falhas ao vivo (POST localhost:9000/config). Exceção de porta: ADR 009.
+  banco-falso:
+    build:
+      context: ./banco-falso
+      dockerfile: Dockerfile
+    container_name: ecommerce-banco-falso
+    restart: unless-stopped
+    ports:
+      - "9000:3000"
+    environment:
+      PORT: 3000
+      NODE_ENV: production
+      LATENCIA_MS: 0
+      FALHA_PERCENT: 0
+    networks:
+      - ecommerce-net
+
 volumes:
   postgres_usuarios_data:
   mongo_catalogo_data:
   postgres_pedidos_data:
+  postgres_pagamentos_data:
   kafka_data:
 
 networks:

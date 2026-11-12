@@ -187,7 +187,9 @@ Authorization: Bearer {{tokenCliente}}
 ### 4. CANCELAR
 ### ------------------------------------------------------------------------------
 
-### 4.1 Cancelar Pedido (Sucesso 200)
+### 4.1 Cancelar Pedido (Sucesso 200 - publica pedido.cancelado: o estoque volta e o pagamento é estornado)
+### Aula 09: o pagamento aprova em milissegundos. Se o pedido já estiver PAGO, a resposta é 409
+### (PAGO não se cancela). O cancelamento com estorno garantido está no fluxo-compra.http, cenário C.
 POST {{baseUrl}}/pedidos/{{pedidoId}}/cancelar
 Authorization: Bearer {{tokenCliente}}
 
@@ -284,15 +286,17 @@ Content-Type: application/json
 ### Extração do ID do Pedido
 @pedidoEvento ={{checkoutEvento.response.body.id}}
 
-### 6.4 Reenvie até mudar (Sucesso 200 - AGUARDANDO_PAGAMENTO, o catálogo reservou)
+### 6.4 Reenvie até mudar (Sucesso 200 - AGUARDANDO_PAGAMENTO, o catálogo reservou;
+###     aula 09: logo em seguida PAGO, o pagamentos cobrou no banco-falso)
 GET {{baseUrl}}/pedidos/{{pedidoEvento}}
 Authorization: Bearer {{tokenCliente}}
 
-### 6.5 Estoque do Produto A DEPOIS (disponivel diminuiu e reservado aumentou na quantidade do pedido;
-###     se sobrou item no carrinho da seção 5, ele também entrou neste pedido)
+### 6.5 Estoque do Produto A DEPOIS (disponivel diminuiu na quantidade do pedido; com o pedido PAGO,
+###     o reservado volta ao valor do 6.1: a unidade foi vendida. Se sobrou item no carrinho da seção 5,
+###     ele também entrou neste pedido)
 GET {{baseUrl}}/produtos/{{produtoA}}
 
-### 6.6 Mailpit (http://localhost:8025): e-mail "Recebemos o seu pedido"
+### 6.6 Mailpit (http://localhost:8025): "Recebemos o seu pedido" e "Pagamento aprovado: pedido confirmado"
 
 ### ------------------------------------------------------------------------------
 ### 7. SEM ESTOQUE (aula 08)

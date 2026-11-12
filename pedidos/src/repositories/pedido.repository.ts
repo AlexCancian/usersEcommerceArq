@@ -106,11 +106,12 @@ export const mudarStatusDoPedido = async (
 export const cancelarPedidoDoUsuario = async (
   id: string,
   usuarioId: string,
-  statusPermitidos: StatusPedido[]
+  statusPermitidos: StatusPedido[],
+  motivo: string
 ): Promise<number> => {
   const resultado = await prisma.pedido.updateMany({
     where: { id, usuario_id: usuarioId, status: { in: statusPermitidos } },
-    data: { status: StatusPedido.CANCELADO },
+    data: { status: StatusPedido.CANCELADO, motivo_cancelamento: motivo },
   });
   return resultado.count;
 };

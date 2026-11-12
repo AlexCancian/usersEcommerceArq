@@ -1,0 +1,173 @@
+### ==============================================================================
+### E-Commerce - Pagamentos pelo API Gateway (REST Client) - aula 09
+### Rotas: GET /pagamentos/:pedidoId (logado: dono ou admin) · GET /pagamentos (admin)
+###        GET /health/pagamentos (público, com o estado do circuito do banco externo)
+### Os cenários da saga (aprovado, recusado, estorno) estão em fluxo-compra.http;
+### os de resiliência (banco instável, fora, lento) em demos.http.
+### ==============================================================================
+
+@baseUrl = http://localhost:8080
+
+### ------------------------------------------------------------------------------
+### 0. PREPARAÇÃO
+### ------------------------------------------------------------------------------
+
+### 0.1 Health (Público) - { status, banco, circuitoBancoExterno: fechado | aberto | meio-aberto }
+GET {{baseUrl}}/health/pagamentos
+
+### 0.2 Login como Cliente
+# @name loginCliente
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "cliente@loja.com",
+  "senha": "cliente123"
+}
+
+### Extração do Token do Cliente
+@tokenCliente ={{loginCliente.response.body.token}}
+
+### 0.3 Login como Administrador
+# @name loginAdmin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@loja.com",
+  "senha": "admin123"
+}
+
+### Extração do Token do Administrador
+@tokenAdmin ={{loginAdmin.response.body.token}}
+
+### 0.4 Cadastro de um Segundo Cliente (201 na primeira vez; 409 nas próximas, pode seguir)
+POST {{baseUrl}}/usuarios
+Content-Type: application/json
+
+{
+  "nome": "Outro Cliente",
+  "email": "outro.cliente@teste.com",
+  "senha": "outroCliente123"
+}
+
+### 0.5 Login do Segundo Cliente
+# @name loginOutro
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "outro.cliente@teste.com",
+  "senha": "outroCliente123"
+}
+
+### Extração do Token do Segundo Cliente
+@tokenOutro ={{loginOutro.response.body.token}}
+
+### 0.6 Vitrine: Camiseta básica (CAM-010)
+# @name vitrine
+GET {{baseUrl}}/produtos?ids=CAM-010
+
+### Extração do ID do produto
+@produto = {{vitrine.response.body.$[0]._id}}
+
+### ------------------------------------------------------------------------------
+### 1. UMA COMPRA PARA TER UM PAGAMENTO
+### ------------------------------------------------------------------------------
+
+### 1.1 Adicionar ao Carrinho (Sucesso 201)
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "produto_id": "{{produto}}",
+  "quantidade": 1
+}
+
+### 1.2 Checkout com Pix (Sucesso 202)
+# @name checkout
+POST {{baseUrl}}/pedidos
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "endereco_entrega": {
+    "cep": "01310-100",
+    "logradouro": "Avenida Paulista",
+    "numero": "1578",
+    "cidade": "São Paulo",
+    "uf": "SP"
+  },
+  "forma_pagamento": "pix"
+}
+
+### Extração do ID do Pedido
+@pedidoId ={{checkout.response.body.id}}
+
+### ------------------------------------------------------------------------------
+### 2. GET /pagamentos/:pedidoId (logado: dono ou admin)
+### ------------------------------------------------------------------------------
+
+### 2.1 O Dono Vê o Próprio Pagamento (Sucesso 200 - reenvie até APROVADO com codigo_transacao TX-...)
+### Logo depois do checkout pode dar 404: o pagamento só nasce quando o estoque.reservado chega.
+GET {{baseUrl}}/pagamentos/{{pedidoId}}
+Authorization: Bearer {{tokenCliente}}
+
+### 2.2 Admin Vê o Pagamento de Qualquer Cliente (Sucesso 200)
+GET {{baseUrl}}/pagamentos/{{pedidoId}}
+Authorization: Bearer {{tokenAdmin}}
+
+### 2.3 Outro Cliente (Erro 404 - não 403: não confirma que o pagamento existe)
+GET {{baseUrl}}/pagamentos/{{pedidoId}}
+Authorization: Bearer {{tokenOutro}}
+
+### 2.4 Pedido sem Pagamento (Erro 404)
+GET {{baseUrl}}/pagamentos/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{tokenCliente}}
+
+### 2.5 Id que Não é UUID (Erro 404)
+GET {{baseUrl}}/pagamentos/abc
+Authorization: Bearer {{tokenCliente}}
+
+### 2.6 Sem Token (Erro 401 - Kong)
+GET {{baseUrl}}/pagamentos/{{pedidoId}}
+
+### 2.7 Tentando se Passar por Outro Usuário sem Token (Erro 401 - Kong apaga os X-User-*)
+GET {{baseUrl}}/pagamentos/{{pedidoId}}
+X-User-Id: 00000000-0000-0000-0000-000000000000
+X-User-Email: hacker@teste.com
+X-User-Role: admin
+
+### ------------------------------------------------------------------------------
+### 3. GET /pagamentos (admin)
+### ------------------------------------------------------------------------------
+
+### 3.1 Admin Lista Todos os Pagamentos (Sucesso 200, mais recentes primeiro)
+GET {{baseUrl}}/pagamentos
+Authorization: Bearer {{tokenAdmin}}
+
+### 3.2 Cliente Tentando Listar (Erro 403 - acl do Kong)
+GET {{baseUrl}}/pagamentos
+Authorization: Bearer {{tokenCliente}}
+
+### 3.3 Cliente com Token e X-User-Role Forjado (Erro 403 - o acl olha o token, não o cabeçalho)
+GET {{baseUrl}}/pagamentos
+Authorization: Bearer {{tokenCliente}}
+X-User-Role: admin
+
+### 3.4 Sem Token (Erro 401 - Kong)
+GET {{baseUrl}}/pagamentos
+
+### ------------------------------------------------------------------------------
+### 4. O BANCO NÃO PASSA PELO KONG
+### ------------------------------------------------------------------------------
+
+### 4.1 /cobrancas pelo gateway não existe (Erro 404 - Kong: nenhuma rota)
+POST {{baseUrl}}/cobrancas
+Content-Type: application/json
+
+{
+  "valor": 10,
+  "referencia": "teste"
+}

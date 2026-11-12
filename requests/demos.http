@@ -1,0 +1,288 @@
+### ==============================================================================
+### E-Commerce - Demonstrações de resiliência (aula 09) - REST Client
+### O banco-falso (localhost:9000) fica FORA do Kong: é o banco do cartão, um sistema que não é nosso.
+### Aqui ele é chamado direto, só para mudar latência e falhas ao vivo (POST /config).
+###
+###   1. O banco sozinho: 402 no cartão 0002, cobrança repetida, estorno, 503 forçado
+###   2. falhaPercent 30  → o retry resolve: pedidos PAGO, alguns com 2 ou 3 tentativas
+###   3. falhaPercent 100 → CIRCUITO ABERTO nos logs e no /health; volta a fechado sozinho
+###   4. latenciaMs 3000  → timeout: ERRO, pedido CANCELADO; o banco cobrou e o pagamentos estornou
+###   5. Volta ao normal
+###
+### Logs para acompanhar (outro terminal):
+###   docker compose logs -f pagamentos banco-falso
+### ==============================================================================
+
+@baseUrl = http://localhost:8080
+@bancoUrl = http://localhost:9000
+
+### ------------------------------------------------------------------------------
+### 0. PREPARAÇÃO
+### ------------------------------------------------------------------------------
+
+### 0.1 Config atual do banco (Sucesso 200 { latenciaMs, falhaPercent })
+GET {{bancoUrl}}/config
+
+### 0.2 Estado do circuito (Sucesso 200 - circuitoBancoExterno: fechado)
+GET {{baseUrl}}/health/pagamentos
+
+### 0.3 Login como Cliente
+# @name loginCliente
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "cliente@loja.com",
+  "senha": "cliente123"
+}
+
+### Extração do Token do Cliente
+@tokenCliente ={{loginCliente.response.body.token}}
+
+### 0.4 Login como Administrador (para ver todos os pagamentos)
+# @name loginAdmin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@loja.com",
+  "senha": "admin123"
+}
+
+### Extração do Token do Administrador
+@tokenAdmin ={{loginAdmin.response.body.token}}
+
+### 0.5 Vitrine: Camiseta básica (CAM-010, 40 unidades no seed)
+# @name vitrine
+GET {{baseUrl}}/produtos?ids=CAM-010
+
+### Extração do ID do produto
+@produto = {{vitrine.response.body.$[0]._id}}
+
+### ------------------------------------------------------------------------------
+### COMPRA RÁPIDA (usada pelas demos 2, 3 e 4): rode C.1 e C.2 quantas vezes a demo pedir
+### ------------------------------------------------------------------------------
+
+### C.1 Adicionar ao Carrinho (Sucesso 201)
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "produto_id": "{{produto}}",
+  "quantidade": 1
+}
+
+### C.2 Checkout com Pix (Sucesso 202)
+# @name compra
+POST {{baseUrl}}/pedidos
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "endereco_entrega": {
+    "cep": "01310-100",
+    "logradouro": "Avenida Paulista",
+    "numero": "1578",
+    "cidade": "São Paulo",
+    "uf": "SP"
+  },
+  "forma_pagamento": "pix"
+}
+
+### Extração do ID do último pedido
+@ultimoPedido ={{compra.response.body.id}}
+
+### C.3 Pedido da última compra
+GET {{baseUrl}}/pedidos/{{ultimoPedido}}
+Authorization: Bearer {{tokenCliente}}
+
+### C.4 Pagamento da última compra (status, tentativas, motivo)
+GET {{baseUrl}}/pagamentos/{{ultimoPedido}}
+Authorization: Bearer {{tokenCliente}}
+
+### C.5 Todos os pagamentos (admin): compare status e tentativas
+GET {{baseUrl}}/pagamentos
+Authorization: Bearer {{tokenAdmin}}
+
+### ------------------------------------------------------------------------------
+### 1. O BANCO SOZINHO (direto na porta 9000)
+### ------------------------------------------------------------------------------
+
+### 1.1 Cartão final 0002 (Erro 402 { aprovado: false, motivo: "saldo insuficiente" })
+POST {{bancoUrl}}/cobrancas
+Content-Type: application/json
+
+{
+  "valor": 60,
+  "cartaoFinal": "0002",
+  "referencia": "demo-recusa"
+}
+
+### 1.2 Cobrança aprovada (Sucesso 201 { aprovado: true, codigo: "TX-..." })
+POST {{bancoUrl}}/cobrancas
+Content-Type: application/json
+
+{
+  "valor": 60,
+  "cartaoFinal": "1111",
+  "referencia": "demo-idempotencia"
+}
+
+### 1.3 Mesma referência de novo (Sucesso 201 com o MESMO codigo: chave de idempotência, não cobra duas vezes)
+POST {{bancoUrl}}/cobrancas
+Content-Type: application/json
+
+{
+  "valor": 60,
+  "cartaoFinal": "1111",
+  "referencia": "demo-idempotencia"
+}
+
+### 1.4 Estorno pela referência (Sucesso 201)
+POST {{bancoUrl}}/estornos
+Content-Type: application/json
+
+{
+  "referencia": "demo-idempotencia"
+}
+
+### 1.5 Estorno sem cobrança (Erro 404)
+POST {{bancoUrl}}/estornos
+Content-Type: application/json
+
+{
+  "referencia": "nao-existe"
+}
+
+### 1.6 Dados inválidos (Erro 400)
+POST {{bancoUrl}}/cobrancas
+Content-Type: application/json
+
+{
+  "valor": -1
+}
+
+### 1.7 Config inválida (Erro 400 - falhaPercent entre 0 e 100)
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "falhaPercent": 150
+}
+
+### 1.8 Banco 100% fora (Sucesso 200)
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "falhaPercent": 100
+}
+
+### 1.9 Toda cobrança devolve 503
+POST {{bancoUrl}}/cobrancas
+Content-Type: application/json
+
+{
+  "valor": 60,
+  "referencia": "demo-503"
+}
+
+### 1.10 Volta ao normal
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "latenciaMs": 0,
+  "falhaPercent": 0
+}
+
+### ------------------------------------------------------------------------------
+### 2. BANCO INSTÁVEL (falhaPercent 30): o retry resolve
+### ------------------------------------------------------------------------------
+### Depois do 2.1, faça umas 5 compras (C.1 + C.2) e confira no C.5:
+### os pagamentos saem APROVADO, alguns com tentativas 2 ou 3 (30% de falha vira ~3% com 3 tentativas).
+### Nos logs: "tentativa 1/3 falhou: banco respondeu HTTP 503" e, em seguida, "tentativa 2/3: aprovada".
+
+### 2.1 30% de falha
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "falhaPercent": 30
+}
+
+### ------------------------------------------------------------------------------
+### 3. BANCO FORA (falhaPercent 100): o circuito abre e fecha sozinho
+### ------------------------------------------------------------------------------
+### Depois do 3.1, faça 2 ou 3 compras (C.1 + C.2):
+###   - logs: "tentativa 1/3 falhou ... 503" ... e depois "CIRCUITO ABERTO"
+###   - C.4: pagamento ERRO, motivo "banco indisponível (...)"; C.3: pedido CANCELADO (pagamento.recusado)
+###   - com o circuito aberto, a compra seguinte falha NA HORA: "não feita: circuito aberto"
+### Então rode o 3.2. Depois de 15 s: logs "CIRCUITO MEIO-ABERTO" e o 3.2 mostra "meio-aberto".
+### Rode o 3.3 (banco volta) e faça 1 compra: logs "CIRCUITO FECHADO", 3.2 mostra "fechado", pedido PAGO.
+
+### 3.1 100% de falha
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "falhaPercent": 100
+}
+
+### 3.2 Estado do circuito (aberto → meio-aberto depois de 15 s → fechado depois de uma cobrança boa)
+GET {{baseUrl}}/health/pagamentos
+
+### 3.3 Banco volta
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "falhaPercent": 0
+}
+
+### ------------------------------------------------------------------------------
+### 4. BANCO LENTO (latenciaMs 3000): timeout NÃO é "não aconteceu"
+### ------------------------------------------------------------------------------
+### Depois do 4.1, faça 1 compra (C.1 + C.2) e espere uns 10 s. Nos logs:
+###   [Banco] cobrança <id> ... aprovada (TX-...)          ← o banco COBROU
+###   tentativa 1/3 falhou: sem resposta em 2000 ms (timeout)
+###   [Banco] cobrança <id> REPETIDA: devolvendo a mesma  ← o retry não cobra de novo (referência)
+###   ... tentativa 3/3 falhou ...
+###   [Banco] ESTORNO da cobrança TX-...                   ← desistiu sem saber: estorna por segurança
+### C.4: pagamento ERRO, 3 tentativas, motivo "banco indisponível (sem resposta em 2000 ms (timeout));
+###      a cobrança feita sem resposta foi estornada por segurança". C.3: pedido CANCELADO.
+### Os timeouts contam como falha: o circuito pode abrir já nesta compra ("CIRCUITO ABERTO" no log).
+### Antes da demo 5, espere 15 s (meio-aberto) e faça 1 compra com o banco normal para ele fechar.
+
+### 4.1 Latência de 3 s (o timeout é 2 s)
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "latenciaMs": 3000
+}
+
+### 4.2 (Opcional) Latência de 1,5 s: lento, mas DENTRO do timeout → pedido PAGO em 1 tentativa
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "latenciaMs": 1500
+}
+
+### ------------------------------------------------------------------------------
+### 5. VOLTA AO NORMAL
+### ------------------------------------------------------------------------------
+
+### 5.1 Sem latência e sem falhas
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "latenciaMs": 0,
+  "falhaPercent": 0
+}
+
+### 5.2 Circuito (fechado depois da próxima compra boa)
+GET {{baseUrl}}/health/pagamentos

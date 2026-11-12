@@ -35,7 +35,7 @@ model Pedido {
   endereco_entrega    Json         @db.JsonB
   forma_pagamento     String       @db.Text
   cartao_final        String?      @db.Text // só os 4 últimos dígitos
-  motivo_cancelamento String?      @db.Text // aula 08: preenchido só por estoque.insuficiente
+  motivo_cancelamento String?      @db.Text // estoque.insuficiente, pagamento.recusado ou cancelamento do cliente
   criado_em           DateTime     @default(now()) @db.Timestamptz
   itens               ItemPedido[]
 

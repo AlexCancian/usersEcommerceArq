@@ -106,6 +106,34 @@ services:
         strip_path: true
         tags: [publico]
 
+  # ------------------------------------------------------------- pagamentos
+  # Aula 09. O banco-falso NÃO entra aqui: é o sistema externo, ninguém de fora chama o banco pela loja.
+  - name: pagamentos
+    url: http://pagamentos:3000
+    routes:
+      - name: listar-pagamentos # GET /pagamentos: só admin (o gateway decide o 403)
+        methods: [GET]
+        paths: ["~/pagamentos$"]
+        strip_path: false
+        tags: [admin]
+        plugins: *so-admin
+
+      - name: pagamento-do-pedido # GET /pagamentos/:pedidoId: dono ou admin (o serviço confere o dono → 404)
+        methods: [GET]
+        paths: ["~/pagamentos/[^/]+$"]
+        strip_path: false
+        tags: [logado]
+        plugins: *logado
+
+  - name: pagamentos-health # GET /health/pagamentos → pagamentos:3000/health (com o estado do circuito)
+    url: http://pagamentos:3000/health
+    routes:
+      - name: health-pagamentos
+        methods: [GET]
+        paths: ["/health/pagamentos"]
+        strip_path: true
+        tags: [publico]
+
 # Os consumers são PERFIS, não pessoas. O jwt acha o consumer pelo campo
 # "perfil" do token (key_claim_name: perfil). Perfil inventado → 401.
 consumers:
