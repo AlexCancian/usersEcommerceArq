@@ -3,6 +3,7 @@ import { z } from "zod";
 export const TOPICOS = {
   PEDIDOS: "pedidos",
   ESTOQUE: "estoque",
+  PAGAMENTOS: "pagamentos",
 } as const;
 export type Topico = (typeof TOPICOS)[keyof typeof TOPICOS];
 
@@ -10,6 +11,10 @@ export const TIPOS = {
   PEDIDO_CRIADO: "pedido.criado",
   ESTOQUE_RESERVADO: "estoque.reservado",
   ESTOQUE_INSUFICIENTE: "estoque.insuficiente",
+  // Aula 09: a saga
+  PEDIDO_CANCELADO: "pedido.cancelado",
+  PAGAMENTO_APROVADO: "pagamento.aprovado",
+  PAGAMENTO_RECUSADO: "pagamento.recusado",
 } as const;
 
 // Envelope publicado (aula 08, slide "O ENVELOPE")
@@ -63,3 +68,20 @@ export const estoqueInsuficienteDadosSchema = z.object({
   motivo: z.string().min(1, "motivo é obrigatório.").max(500, "motivo deve ter no máximo 500 caracteres."),
 });
 export type EstoqueInsuficienteDados = z.infer<typeof estoqueInsuficienteDadosSchema>;
+
+// ---- Produzido (aula 09): pedido.cancelado, quando o cliente cancela.
+// Leva o que o pagamentos precisa para bloquear a cobrança ou estornar, sem consultar ninguém.
+export interface PedidoCanceladoDados {
+  usuarioId: string;
+  clienteEmail: string;
+  valorTotal: number;
+  motivo: string;
+}
+
+// ---- Consumido (aula 09): pagamento.* (pedidos só usa o pedidoId e o motivo — leitor tolerante)
+export const pagamentoAprovadoDadosSchema = z.object({});
+
+export const pagamentoRecusadoDadosSchema = z.object({
+  motivo: z.string().min(1, "motivo é obrigatório."),
+});
+export type PagamentoRecusadoDados = z.infer<typeof pagamentoRecusadoDadosSchema>;

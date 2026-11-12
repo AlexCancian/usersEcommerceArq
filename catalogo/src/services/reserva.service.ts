@@ -1,10 +1,16 @@
 import { publicar } from "../config/kafka.js";
 import {
   buscarDisponivel,
+  confirmarSaidaDoEstoque,
+  devolverAoDisponivel,
   devolverEstoque,
   reservarEstoque,
 } from "../repositories/produto.repository.js";
-import { concluirReserva, criarReserva } from "../repositories/reserva.repository.js";
+import {
+  concluirReserva,
+  criarReserva,
+  mudarStatusReserva,
+} from "../repositories/reserva.repository.js";
 import {
   EnvelopeRecebido,
   EstoqueInsuficienteDados,
@@ -79,7 +85,65 @@ export const reservarEstoqueDoPedidoService = async (
       itens: dados.itens,
       valorTotal: dados.valorTotal,
       formaPagamento: dados.formaPagamento,
+      cartaoFinal: dados.cartaoFinal ?? null,
     },
     correlationId
+  );
+};
+
+// ---- Aula 09: a saga. As duas só agem se a reserva ainda estiver "reservado":
+// esse filtro de estado é a idempotência (liberar duas vezes não devolve duas vezes).
+
+// pagamento.aprovado: confirma a reserva. O produto sai do reservado
+// (o disponível já tinha diminuído na reserva).
+export const confirmarReservaService = async (evento: EnvelopeRecebido): Promise<void> => {
+  const { pedidoId, correlationId } = evento;
+  const reserva = await mudarStatusReserva(pedidoId, "reservado", "confirmado");
+  if (!reserva) {
+    console.log(
+      `[correlationId=${correlationId}] ${evento.tipo} ignorado pedidoId=${pedidoId} (reserva não está mais reservada)`
+    );
+    return;
+  }
+
+  for (const item of reserva.itens) {
+    await confirmarSaidaDoEstoque(item.produtoId, item.quantidade);
+  }
+  console.log(
+    `[correlationId=${correlationId}] reserva confirmada pedidoId=${pedidoId} (${reserva.itens.length} item(ns) saíram do reservado)`
+  );
+};
+
+// COMPENSAÇÃO (pagamento.recusado e pedido.cancelado): devolve o estoque ao disponível.
+// O catálogo não sabe por que o pedido falhou: só escuta o evento e desfaz a sua parte.
+export const liberarReservaService = async (evento: EnvelopeRecebido): Promise<void> => {
+  const { pedidoId, correlationId } = evento;
+  let reserva = await mudarStatusReserva(pedidoId, "reservado", "liberado");
+
+  // Corrida entre tópicos: o pagamento.aprovado chegou antes do pedido.cancelado e a reserva
+  // já foi confirmada. O pedido não está PAGO (pedidos não cancela PAGO) e o pagamentos estorna:
+  // o estoque precisa voltar. O reservado já tinha baixado, então só o disponível sobe.
+  let jaConfirmada = false;
+  if (!reserva && evento.tipo === TIPOS.PEDIDO_CANCELADO) {
+    reserva = await mudarStatusReserva(pedidoId, "confirmado", "liberado");
+    jaConfirmada = reserva !== null;
+  }
+
+  if (!reserva) {
+    console.log(
+      `[correlationId=${correlationId}] ${evento.tipo} ignorado pedidoId=${pedidoId} (nada reservado para devolver)`
+    );
+    return;
+  }
+
+  for (const item of reserva.itens) {
+    if (jaConfirmada) {
+      await devolverAoDisponivel(item.produtoId, item.quantidade);
+    } else {
+      await devolverEstoque(item.produtoId, item.quantidade);
+    }
+  }
+  console.log(
+    `[correlationId=${correlationId}] COMPENSAÇÃO: estoque devolvido pedidoId=${pedidoId} por ${evento.tipo} (${reserva.itens.length} item(ns))`
   );
 };

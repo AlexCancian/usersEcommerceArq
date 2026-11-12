@@ -3,12 +3,17 @@ import { z } from "zod";
 export const TOPICOS = {
   PEDIDOS: "pedidos",
   ESTOQUE: "estoque",
+  PAGAMENTOS: "pagamentos",
 } as const;
 export type Topico = (typeof TOPICOS)[keyof typeof TOPICOS];
 
 export const TIPOS = {
   PEDIDO_CRIADO: "pedido.criado",
   ESTOQUE_INSUFICIENTE: "estoque.insuficiente",
+  // Aula 09
+  PAGAMENTO_APROVADO: "pagamento.aprovado",
+  PAGAMENTO_RECUSADO: "pagamento.recusado",
+  PAGAMENTO_ESTORNADO: "pagamento.estornado",
 } as const;
 
 export const envelopeRecebidoSchema = z.object({
@@ -39,3 +44,25 @@ export const estoqueInsuficienteDadosSchema = z.object({
   motivo: z.string().min(1, "motivo é obrigatório."),
 });
 export type EstoqueInsuficienteDados = z.infer<typeof estoqueInsuficienteDadosSchema>;
+
+// ---- Aula 09: tópico pagamentos (só o que o e-mail usa)
+export const pagamentoAprovadoDadosSchema = z.object({
+  clienteEmail: z.string().email("clienteEmail inválido."),
+  valor: z.number().nonnegative("valor não pode ser negativo."),
+  codigoTransacao: z.string().min(1, "codigoTransacao é obrigatório."),
+});
+export type PagamentoAprovadoDados = z.infer<typeof pagamentoAprovadoDadosSchema>;
+
+export const pagamentoRecusadoDadosSchema = z.object({
+  clienteEmail: z.string().email("clienteEmail inválido."),
+  valor: z.number().nonnegative("valor não pode ser negativo."),
+  motivo: z.string().min(1, "motivo é obrigatório."),
+});
+export type PagamentoRecusadoDados = z.infer<typeof pagamentoRecusadoDadosSchema>;
+
+export const pagamentoEstornadoDadosSchema = z.object({
+  clienteEmail: z.string().email("clienteEmail inválido."),
+  valor: z.number().nonnegative("valor não pode ser negativo."),
+  codigoTransacao: z.string().min(1, "codigoTransacao é obrigatório."),
+});
+export type PagamentoEstornadoDados = z.infer<typeof pagamentoEstornadoDadosSchema>;

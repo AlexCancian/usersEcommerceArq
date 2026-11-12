@@ -52,13 +52,17 @@ router.get(
   }
 );
 
-// POST /pedidos/:id/cancelar - 200 cancelado · 409 status não permite
+// POST /pedidos/:id/cancelar - 200 cancelado (publica pedido.cancelado) · 404 não é meu · 409 status não permite
 router.post(
   "/:id/cancelar",
   validate(pedidoIdParamSchema),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const pedido = await cancelarPedidoService(req.params.id, req.user!.id);
+      const pedido = await cancelarPedidoService(
+        req.params.id,
+        req.user!.id,
+        req.header("x-request-id")
+      );
       return res.status(200).json(pedido);
     } catch (error) {
       next(error);

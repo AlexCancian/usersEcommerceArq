@@ -1,0 +1,235 @@
+### ==============================================================================
+### E-Commerce - A saga completa (aula 09) pelo API Gateway (REST Client)
+### pedidos ─pedido.criado→ catalogo ─estoque.reservado→ pagamentos ─HTTP→ banco-falso
+###         ←──────────── pagamento.aprovado / pagamento.recusado / pagamento.estornado
+###
+### A. Compra aprovada (pix)          → pedido PAGO · pagamento APROVADO · estoque sai do reservado
+### B. Cartão final 0002 (recusado)   → pedido CANCELADO com motivo · pagamento RECUSADO · estoque volta
+### C. Cancelada no meio da cobrança  → pagamento ESTORNADO (ou CANCELADO) · estoque volta
+### D. Cancelar um pedido PAGO        → 409
+###
+### Acompanhar: Mailpit http://localhost:8025 · Kafka UI http://localhost:8090 (tópico pagamentos)
+### Logs de uma compra (X-Request-Id da resposta do checkout):
+###   docker compose logs pedidos catalogo pagamentos banco-falso notificacoes | grep <correlationId>
+###   PowerShell: ... | Select-String <correlationId>
+### ==============================================================================
+
+@baseUrl = http://localhost:8080
+@bancoUrl = http://localhost:9000
+
+### ------------------------------------------------------------------------------
+### 0. PREPARAÇÃO
+### ------------------------------------------------------------------------------
+
+### 0.1 Banco no normal (latência 0, sem falhas)
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "latenciaMs": 0,
+  "falhaPercent": 0
+}
+
+### 0.2 Login como Cliente
+# @name loginCliente
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "cliente@loja.com",
+  "senha": "cliente123"
+}
+
+### Extração do Token do Cliente
+@tokenCliente ={{loginCliente.response.body.token}}
+
+### 0.3 Vitrine: Smartphone X (CEL-001)
+# @name vitrine
+GET {{baseUrl}}/produtos?ids=CEL-001
+
+### Extração do ID do produto
+@produto = {{vitrine.response.body.$[0]._id}}
+
+### ------------------------------------------------------------------------------
+### A. COMPRA APROVADA (pix)
+### ------------------------------------------------------------------------------
+
+### A.1 Estoque ANTES (anote disponivel e reservado)
+GET {{baseUrl}}/produtos/{{produto}}
+
+### A.2 Adicionar ao Carrinho (Sucesso 201)
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "produto_id": "{{produto}}",
+  "quantidade": 1
+}
+
+### A.3 Checkout com Pix (Sucesso 202 - AGUARDANDO_ESTOQUE)
+# @name compraAprovada
+POST {{baseUrl}}/pedidos
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "endereco_entrega": {
+    "cep": "01310-100",
+    "logradouro": "Avenida Paulista",
+    "numero": "1578",
+    "cidade": "São Paulo",
+    "uf": "SP"
+  },
+  "forma_pagamento": "pix"
+}
+
+### Extração do ID do Pedido
+@pedidoAprovado ={{compraAprovada.response.body.id}}
+
+### A.4 Pedido (reenvie até PAGO)
+GET {{baseUrl}}/pedidos/{{pedidoAprovado}}
+Authorization: Bearer {{tokenCliente}}
+
+### A.5 Pagamento (APROVADO, tentativas 1, codigo_transacao TX-...)
+GET {{baseUrl}}/pagamentos/{{pedidoAprovado}}
+Authorization: Bearer {{tokenCliente}}
+
+### A.6 Estoque DEPOIS (disponivel -1 em relação ao A.1; reservado igual ao A.1: a unidade foi vendida)
+GET {{baseUrl}}/produtos/{{produto}}
+
+### A.7 Mailpit: "Recebemos o seu pedido" e "Pagamento aprovado: pedido confirmado"
+
+### ------------------------------------------------------------------------------
+### B. CARTÃO RECUSADO (final 0002): a saga compensa
+### ------------------------------------------------------------------------------
+
+### B.1 Estoque ANTES (anote disponivel)
+GET {{baseUrl}}/produtos/{{produto}}
+
+### B.2 Adicionar ao Carrinho (Sucesso 201)
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "produto_id": "{{produto}}",
+  "quantidade": 1
+}
+
+### B.3 Checkout com Cartão Final 0002 (Sucesso 202 - o banco vai responder 402)
+# @name compraRecusada
+POST {{baseUrl}}/pedidos
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "endereco_entrega": {
+    "cep": "01310-100",
+    "logradouro": "Avenida Paulista",
+    "numero": "1578",
+    "cidade": "São Paulo",
+    "uf": "SP"
+  },
+  "forma_pagamento": "cartao",
+  "numero_cartao": "4000000000000002"
+}
+
+### Extração do ID do Pedido
+@pedidoRecusado ={{compraRecusada.response.body.id}}
+
+### B.4 Pedido (reenvie até CANCELADO, motivo_cancelamento "Pagamento recusado: saldo insuficiente")
+GET {{baseUrl}}/pedidos/{{pedidoRecusado}}
+Authorization: Bearer {{tokenCliente}}
+
+### B.5 Pagamento (RECUSADO, tentativas 1: 402 é resposta, não repete)
+GET {{baseUrl}}/pagamentos/{{pedidoRecusado}}
+Authorization: Bearer {{tokenCliente}}
+
+### B.6 Estoque DEPOIS (disponivel igual ao B.1: o catálogo devolveu)
+GET {{baseUrl}}/produtos/{{produto}}
+
+### B.7 Mailpit: "Recebemos o seu pedido" e "Pagamento recusado: pedido cancelado"
+
+### ------------------------------------------------------------------------------
+### C. CANCELADA NO MEIO DA COBRANÇA (estorno)
+### ------------------------------------------------------------------------------
+### O banco fica lento (1,5 s, dentro do timeout de 2 s) para dar tempo de cancelar.
+### Rode C.1 a C.5 em sequência, rápido (o C.5 logo depois do C.4).
+
+### C.1 Banco lento: latência 1500 ms
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "latenciaMs": 1500
+}
+
+### C.2 Estoque ANTES (anote disponivel)
+GET {{baseUrl}}/produtos/{{produto}}
+
+### C.3 Adicionar ao Carrinho (Sucesso 201)
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "produto_id": "{{produto}}",
+  "quantidade": 1
+}
+
+### C.4 Checkout com Cartão (Sucesso 202)
+# @name compraCancelada
+POST {{baseUrl}}/pedidos
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "endereco_entrega": {
+    "cep": "01310-100",
+    "logradouro": "Avenida Paulista",
+    "numero": "1578",
+    "cidade": "São Paulo",
+    "uf": "SP"
+  },
+  "forma_pagamento": "cartao",
+  "numero_cartao": "4111111111111111"
+}
+
+### Extração do ID do Pedido
+@pedidoCancelado ={{compraCancelada.response.body.id}}
+
+### C.5 Cancelar JÁ (Sucesso 200 - CANCELADO, motivo "Cancelado pelo cliente."; publica pedido.cancelado)
+POST {{baseUrl}}/pedidos/{{pedidoCancelado}}/cancelar
+Authorization: Bearer {{tokenCliente}}
+
+### C.6 Pagamento (reenvie até estabilizar)
+###   ESTORNADO: o banco cobrou antes do cancelamento chegar → pagamentos estornou (codigo_transacao preenchido)
+###   CANCELADO: o cancelamento chegou antes da cobrança → o banco nem foi chamado
+GET {{baseUrl}}/pagamentos/{{pedidoCancelado}}
+Authorization: Bearer {{tokenCliente}}
+
+### C.7 Pedido (continua CANCELADO: o pagamento.aprovado atrasado não o leva a PAGO)
+GET {{baseUrl}}/pedidos/{{pedidoCancelado}}
+Authorization: Bearer {{tokenCliente}}
+
+### C.8 Estoque DEPOIS (disponivel igual ao C.2: o catálogo devolveu)
+GET {{baseUrl}}/produtos/{{produto}}
+
+### C.9 Mailpit: se ESTORNADO, "Estorno do seu pagamento"
+
+### C.10 Banco de volta ao normal
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "latenciaMs": 0
+}
+
+### ------------------------------------------------------------------------------
+### D. CANCELAR DEPOIS DE PAGO
+### ------------------------------------------------------------------------------
+
+### D.1 Cancelar o Pedido PAGO do cenário A (Erro 409 - no projeto, PAGO não se cancela)
+POST {{baseUrl}}/pedidos/{{pedidoAprovado}}/cancelar
+Authorization: Bearer {{tokenCliente}}

@@ -1,6 +1,13 @@
 import { Schema, model } from "mongoose";
 
-export const STATUS_RESERVA = ["processando", "reservado", "insuficiente"] as const;
+// Aula 09: confirmado (pagamento aprovado) e liberado (compensação: estoque devolvido).
+export const STATUS_RESERVA = [
+  "processando",
+  "reservado",
+  "insuficiente",
+  "confirmado",
+  "liberado",
+] as const;
 export type StatusReserva = (typeof STATUS_RESERVA)[number];
 
 export interface IItemReserva {

@@ -1,0 +1,41 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Aula 09, slide "PAGAMENTOS: A TABELA". A aula usa TEXT + CHECK; aqui é enum (mesmo efeito, padrão do projeto).
+//   PENDENTE  : gravado antes de chamar o banco
+//   APROVADO / RECUSADO: o banco respondeu
+//   ERRO      : o banco não respondeu (timeout, 5xx, circuito aberto)
+//   CANCELADO : o pedido foi cancelado antes (ou durante) a cobrança
+//   ESTORNADO : cobrado e devolvido
+enum StatusPagamento {
+  PENDENTE
+  APROVADO
+  RECUSADO
+  ERRO
+  CANCELADO
+  ESTORNADO
+}
+
+// Sem FK para pedidos e usuarios: moram em outros bancos.
+// pedido_id UNIQUE faz dois papéis: não cobrar duas vezes e não cobrar o que foi cancelado.
+model Pagamento {
+  id               String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  pedido_id        String          @unique @db.Uuid
+  usuario_id       String          @db.Uuid
+  valor            Decimal         @db.Decimal(12, 2) // CHECK (valor >= 0) na migration
+  forma            String?         @db.Text
+  cartao_final     String?         @db.Text // só os 4 últimos dígitos
+  status           StatusPagamento
+  tentativas       Int             @default(0) // CHECK (tentativas >= 0) na migration
+  codigo_transacao String?         @db.Text // o TX-... do banco
+  motivo           String?         @db.Text
+  criado_em        DateTime        @default(now()) @db.Timestamptz
+
+  @@map("pagamentos")
+}

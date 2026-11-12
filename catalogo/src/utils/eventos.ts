@@ -3,6 +3,7 @@ import { z } from "zod";
 export const TOPICOS = {
   PEDIDOS: "pedidos",
   ESTOQUE: "estoque",
+  PAGAMENTOS: "pagamentos",
 } as const;
 export type Topico = (typeof TOPICOS)[keyof typeof TOPICOS];
 
@@ -10,6 +11,10 @@ export const TIPOS = {
   PEDIDO_CRIADO: "pedido.criado",
   ESTOQUE_RESERVADO: "estoque.reservado",
   ESTOQUE_INSUFICIENTE: "estoque.insuficiente",
+  // Aula 09: a saga (compensações)
+  PEDIDO_CANCELADO: "pedido.cancelado",
+  PAGAMENTO_APROVADO: "pagamento.aprovado",
+  PAGAMENTO_RECUSADO: "pagamento.recusado",
 } as const;
 
 export interface Envelope<TDados> {
@@ -40,12 +45,13 @@ export const itemEventoSchema = z.object({
 });
 export type ItemEvento = z.infer<typeof itemEventoSchema>;
 
-// ---- Consumido: pedido.criado (cartaoFinal não é usado nem repassado)
+// ---- Consumido: pedido.criado (aula 09: cartaoFinal é repassado no estoque.reservado para o pagamentos)
 export const pedidoCriadoDadosSchema = z.object({
   usuarioId: z.string().min(1, "usuarioId é obrigatório."),
   clienteEmail: z.string().email("clienteEmail inválido."),
   valorTotal: z.number().nonnegative("valorTotal não pode ser negativo."),
   formaPagamento: z.string().min(1, "formaPagamento é obrigatória."),
+  cartaoFinal: z.string().regex(/^\d{4}$/, "cartaoFinal deve ter 4 dígitos.").nullable().optional(),
   itens: z.array(itemEventoSchema).min(1, "itens não pode ser vazio."),
 });
 export type PedidoCriadoDados = z.infer<typeof pedidoCriadoDadosSchema>;
@@ -57,6 +63,7 @@ export interface EstoqueReservadoDados {
   itens: ItemEvento[];
   valorTotal: number;
   formaPagamento: string;
+  cartaoFinal: string | null; // aula 09: tudo que a cobrança precisa vem no evento
 }
 
 export interface EstoqueInsuficienteDados {

@@ -1,5 +1,9 @@
 import { iniciarConsumer } from "../config/kafka.js";
-import { reservarEstoqueDoPedidoService } from "../services/reserva.service.js";
+import {
+  confirmarReservaService,
+  liberarReservaService,
+  reservarEstoqueDoPedidoService,
+} from "../services/reserva.service.js";
 import {
   EnvelopeRecebido,
   pedidoCriadoDadosSchema,
@@ -20,9 +24,16 @@ async function aoCriarPedido(evento: EnvelopeRecebido): Promise<void> {
   await reservarEstoqueDoPedidoService(evento, dados.data);
 }
 
+// Aula 09: confirmar e liberar só precisam do pedidoId do envelope (a reserva tem os itens).
+// Leitor tolerante: os dados do evento não são lidos.
+
 // groupId = nome do serviço: réplicas dividem as partições sozinhas.
+// Um consumer só para os dois tópicos: pedidos (criado, cancelado) e pagamentos (aprovado, recusado).
 export async function iniciarConsumerPedidos(): Promise<void> {
-  await iniciarConsumer("catalogo", [TOPICOS.PEDIDOS], {
+  await iniciarConsumer("catalogo", [TOPICOS.PEDIDOS, TOPICOS.PAGAMENTOS], {
     [TIPOS.PEDIDO_CRIADO]: aoCriarPedido,
+    [TIPOS.PAGAMENTO_APROVADO]: confirmarReservaService, // reservado → vendido
+    [TIPOS.PAGAMENTO_RECUSADO]: liberarReservaService, // COMPENSAÇÃO
+    [TIPOS.PEDIDO_CANCELADO]: liberarReservaService, // COMPENSAÇÃO
   });
 }

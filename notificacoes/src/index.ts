@@ -6,7 +6,7 @@ import { iniciarConsumerEventos } from "./consumers/eventos.consumer.js";
 async function iniciar(): Promise<void> {
   await garantirTopicos();
   await iniciarConsumerEventos(); // groupId "notificacoes"
-  console.log("📨 notificacoes ouvindo pedidos e estoque");
+  console.log("📨 notificacoes ouvindo pedidos, estoque e pagamentos");
 
   // Desligar com calma: sai do grupo na hora, sem esperar ~30 s para repassar as partições.
   const encerrar = async (): Promise<void> => {
