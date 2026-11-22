@@ -9,7 +9,7 @@
 ### 1. HEALTH CHECK
 ### ------------------------------------------------------------------------------
 
-### 1.1 Health Check (Público) - no gateway: /health/usuarios
+### 1.1 Health Check (Público) - no gateway: /health/usuarios → { servico, status, dependencias: { banco } }
 GET {{baseUrl}}/health/usuarios
 
 ### ------------------------------------------------------------------------------

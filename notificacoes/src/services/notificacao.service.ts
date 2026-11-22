@@ -1,5 +1,6 @@
 import { env } from "../config/env.js";
 import { smtp } from "../config/smtp.js";
+import { logEvento } from "../utils/log.js";
 import {
   EnvelopeRecebido,
   EstoqueInsuficienteDados,
@@ -19,9 +20,10 @@ async function enviar(
   texto: string
 ): Promise<void> {
   await smtp.sendMail({ from: env.MAIL_FROM, to: para, subject: assunto, text: texto });
-  console.log(
-    `[correlationId=${evento.correlationId}] e-mail "${assunto}" enviado pedidoId=${evento.pedidoId}`
-  );
+  // Sem destinatário nem assunto no log (dado pessoal).
+  logEvento("processou", evento.tipo, evento.pedidoId, evento.correlationId, {
+    resultado: "email-enviado",
+  });
 }
 
 export const avisarPedidoRecebidoService = async (

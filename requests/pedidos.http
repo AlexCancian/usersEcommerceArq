@@ -12,7 +12,7 @@
 ### 0. PREPARAÇÃO
 ### ------------------------------------------------------------------------------
 
-### 0.1 Health Check (Público) - no gateway: /health/pedidos
+### 0.1 Health Check (Público) - no gateway: /health/pedidos → { servico, status, dependencias: { banco, kafka } }
 GET {{baseUrl}}/health/pedidos
 
 ### 0.2 Login como Cliente

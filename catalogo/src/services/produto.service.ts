@@ -14,11 +14,38 @@ import {
   NotFoundError,
 } from "../utils/errors.js";
 import { IProduto } from "../models/produto.model.js";
+import { invalidarVitrine, lerOuBuscar, ResultadoCache } from "./cache.service.js";
 
 export const listProdutosAtivosService = async (
   filters: ProdutoFilterOptions
 ): Promise<IProduto[]> => {
   return findActiveProdutos(filters);
+};
+
+// Vitrine (GET /produtos sem ids) com cache-aside. Os valores normalizados vão para a chave
+// E para a consulta ao Mongo, para chave e resultado nunca divergirem.
+export const listarVitrineService = async (filtros: {
+  categoria?: string;
+  busca?: string;
+}): Promise<ResultadoCache> => {
+  const categoria = filtros.categoria?.trim().toLowerCase() || undefined;
+  const busca = filtros.busca?.trim().toLowerCase() || undefined;
+
+  const sufixo =
+    !categoria && !busca
+      ? "produtos:todos"
+      : `produtos:categoria=${encodeURIComponent(categoria ?? "")}&busca=${encodeURIComponent(busca ?? "")}`;
+
+  return lerOuBuscar(sufixo, () => findActiveProdutos({ categoria, busca }));
+};
+
+// Busca em lote do checkout (?ids=): nunca passa pelo cache (o estoque é decidido no Mongo).
+export const listarProdutosPorIdsService = async (ids: string[]): Promise<IProduto[]> => {
+  return findActiveProdutos({ ids });
+};
+
+export const getProdutoCacheadoService = async (idOrSku: string): Promise<ResultadoCache> => {
+  return lerOuBuscar(`produto:${encodeURIComponent(idOrSku)}`, () => getProdutoByIdService(idOrSku));
 };
 
 export const getProdutoByIdService = async (
@@ -43,7 +70,9 @@ export const createProdutoService = async (
     }
   }
 
-  return createProduto(data);
+  const criado = await createProduto(data);
+  await invalidarVitrine("produto criado");
+  return criado;
 };
 
 export const updateProdutoService = async (
@@ -67,6 +96,7 @@ export const updateProdutoService = async (
     throw new NotFoundError("Produto não encontrado.");
   }
 
+  await invalidarVitrine("produto alterado");
   return updated;
 };
 
@@ -87,6 +117,7 @@ export const ajustarEstoqueService = async (
     throw new NotFoundError("Produto não encontrado.");
   }
 
+  await invalidarVitrine("estoque ajustado");
   return updated;
 };
 
@@ -96,4 +127,6 @@ export const desativarProdutoService = async (id: string): Promise<void> => {
   if (!updated) {
     throw new NotFoundError("Produto não encontrado.");
   }
+
+  await invalidarVitrine("produto desativado");
 };

@@ -1,7 +1,7 @@
 ### ==============================================================================
 ### E-Commerce - Pagamentos pelo API Gateway (REST Client) - aula 09
 ### Rotas: GET /pagamentos/:pedidoId (logado: dono ou admin) · GET /pagamentos (admin)
-###        GET /health/pagamentos (público, com o estado do circuito do banco externo)
+###        GET /health/pagamentos (público, com o estado do circuito do banco do cartão)
 ### Os cenários da saga (aprovado, recusado, estorno) estão em fluxo-compra.http;
 ### os de resiliência (banco instável, fora, lento) em demos.http.
 ### ==============================================================================
@@ -12,7 +12,7 @@
 ### 0. PREPARAÇÃO
 ### ------------------------------------------------------------------------------
 
-### 0.1 Health (Público) - { status, banco, circuitoBancoExterno: fechado | aberto | meio-aberto }
+### 0.1 Health (Público) - { servico, status, dependencias: { banco, kafka, circuitoBancoCartao: FECHADO | ABERTO | MEIO-ABERTO } }; 503 se banco ou kafka fora
 GET {{baseUrl}}/health/pagamentos
 
 ### 0.2 Login como Cliente

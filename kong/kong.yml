@@ -134,6 +134,17 @@ services:
         strip_path: true
         tags: [publico]
 
+  # ------------------------------------------------------------ notificacoes
+  # Aula 10. O notificacoes só escuta eventos: não tem rota de negócio, só o /health.
+  - name: notificacoes-health # GET /health/notificacoes → notificacoes:3000/health
+    url: http://notificacoes:3000/health
+    routes:
+      - name: health-notificacoes
+        methods: [GET]
+        paths: ["/health/notificacoes"]
+        strip_path: true
+        tags: [publico]
+
 # Os consumers são PERFIS, não pessoas. O jwt acha o consumer pelo campo
 # "perfil" do token (key_claim_name: perfil). Perfil inventado → 401.
 consumers:

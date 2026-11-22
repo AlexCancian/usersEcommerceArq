@@ -25,6 +25,9 @@ RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
 
 ENV NODE_ENV=production
+ENV PORT=3000
 
-# Sem EXPOSE: o serviço não tem HTTP. Forma exec: o Node é o PID 1 e recebe o SIGTERM.
+# HTTP mínimo só para GET /health (healthcheck do Docker e rota /health/notificacoes no Kong).
+# O compose não publica porta. Forma exec: o Node é o PID 1 e recebe o SIGTERM.
+EXPOSE 3000
 CMD ["node", "dist/index.js"]

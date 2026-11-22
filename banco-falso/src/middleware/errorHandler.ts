@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { AppError } from "../utils/errors.js";
+import { descreverErro, lerRequestId } from "../utils/log.js";
 
 export const errorHandler = (
   err: unknown,
@@ -19,8 +20,7 @@ export const errorHandler = (
   }
 
   console.error(
-    `[Banco] erro interno não tratado [x-request-id=${req.header("x-request-id") ?? "-"}]:`,
-    err
+    `[banco-falso] erro 500 ${req.method} ${req.path} correlationId=${lerRequestId(req.header("x-request-id")) ?? "-"} erro=${descreverErro(err)}`
   );
   return res.status(500).json({ erro: "Erro interno do servidor." });
 };

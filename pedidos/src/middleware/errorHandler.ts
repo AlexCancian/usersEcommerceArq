@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { Prisma } from "@prisma/client";
 import { AppError } from "../utils/errors.js";
+import { descreverErro, lerRequestId } from "../utils/log.js";
 
 export const errorHandler = (
   err: unknown,
@@ -46,8 +47,7 @@ export const errorHandler = (
   // Erro 500 não tratado: NUNCA expor stack trace ou mensagem técnica do banco.
   // O x-request-id (correlation-id do Kong) permite achar a requisição nos logs de todos os serviços.
   console.error(
-    `Erro interno não tratado no pedidos [x-request-id=${req.header("x-request-id") ?? "-"}]:`,
-    err
+    `[pedidos] erro 500 ${req.method} ${req.path} correlationId=${lerRequestId(req.header("x-request-id")) ?? "-"} erro=${descreverErro(err)}`
   );
 
   return res.status(500).json({

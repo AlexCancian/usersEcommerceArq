@@ -1,15 +1,19 @@
 import { desconectarKafka, garantirTopicos } from "./config/kafka.js";
 import { smtp } from "./config/smtp.js";
+import { env } from "./config/env.js";
+import { iniciarServidorHealth } from "./health.js";
 import { iniciarConsumerEventos } from "./consumers/eventos.consumer.js";
 
-// Serviço só de escuta: sem Express, sem porta, sem rota no Kong.
+// Serviço de escuta: sem Express, sem rota de negócio; HTTP só para /health (node:http).
 async function iniciar(): Promise<void> {
   await garantirTopicos();
   await iniciarConsumerEventos(); // groupId "notificacoes"
   console.log("📨 notificacoes ouvindo pedidos, estoque e pagamentos");
+  const server = iniciarServidorHealth(env.PORT);
 
   // Desligar com calma: sai do grupo na hora, sem esperar ~30 s para repassar as partições.
   const encerrar = async (): Promise<void> => {
+    server.close();
     await desconectarKafka();
     smtp.close();
     process.exit(0);

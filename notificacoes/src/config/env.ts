@@ -3,6 +3,8 @@ dotenv.config();
 
 export const env = {
   NODE_ENV: process.env.NODE_ENV || "development",
+  // Aula 10: porta do HTTP mínimo que serve só o /health (sem rota de negócio)
+  PORT: process.env.PORT ? parseInt(process.env.PORT, 10) : 3000,
   // Kafka (aula 08): lista separada por vírgula
   KAFKA_BROKERS: (process.env.KAFKA_BROKERS || "kafka:9092")
     .split(",")

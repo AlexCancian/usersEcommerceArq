@@ -1,6 +1,8 @@
 import CircuitBreaker from "opossum";
 import { z } from "zod";
 import { env } from "./config/env.js";
+import { EstadoCircuito } from "./utils/health.js";
+import { descreverErro } from "./utils/log.js";
 
 // Aula 09: a chamada ao banco do cartão (sistema externo) com os três padrões de resiliência.
 //   timeout          : AbortSignal.timeout(2000) em toda chamada
@@ -135,10 +137,10 @@ disjuntor.on("halfOpen", () =>
 );
 disjuntor.on("close", () => console.log("[pagamentos] CIRCUITO FECHADO: banco externo respondendo"));
 
-export function estadoCircuito(): "fechado" | "aberto" | "meio-aberto" {
-  if (disjuntor.opened) return "aberto";
-  if (disjuntor.halfOpen) return "meio-aberto";
-  return "fechado";
+export function estadoCircuito(): EstadoCircuito {
+  if (disjuntor.opened) return "ABERTO";
+  if (disjuntor.halfOpen) return "MEIO-ABERTO";
+  return "FECHADO";
 }
 
 export function desligarCircuito(): void {
@@ -178,7 +180,7 @@ export async function cobrar(dados: DadosCobranca): Promise<ResultadoCobranca> {
       } else {
         ultimoMotivo = "erro inesperado na chamada ao banco";
         incerto = true;
-        console.error(`${log} erro inesperado:`, erro);
+        console.error(`${log} erro inesperado: ${descreverErro(erro)}`);
       }
 
       console.warn(`${log} tentativa ${tentativa}/${MAX_TENTATIVAS} falhou: ${ultimoMotivo}`);

@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { AppError } from "../utils/errors.js";
 import mongoose from "mongoose";
+import { descreverErro, lerRequestId } from "../utils/log.js";
 
 export const errorHandler = (
   err: any,
@@ -56,7 +57,9 @@ export const errorHandler = (
   }
 
   // Log do erro no servidor para depuração
-  console.error("Erro interno não tratado no catalogo:", err);
+  console.error(
+    `[catalogo] erro 500 ${req.method} ${req.path} correlationId=${lerRequestId(req.header("x-request-id")) ?? "-"} erro=${descreverErro(err)}`
+  );
 
   // NUNCA vazar stack trace ou detalhes do MongoDB para o cliente
   return res.status(500).json({

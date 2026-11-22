@@ -12,15 +12,16 @@ import {
   TIPOS,
   TOPICOS,
 } from "../utils/eventos.js";
+import { logEvento } from "../utils/log.js";
 
 // Validação antes do banco (D06): erro de validação = log + return (descarte);
 // erro de infraestrutura (Prisma) sobe para o kafkajs reentregar.
 function pedidoIdValido(evento: EnvelopeRecebido): boolean {
   const resultado = pedidoIdEventoSchema.safeParse(evento.pedidoId);
   if (!resultado.success) {
-    console.error(
-      `[correlationId=${evento.correlationId}] evento inválido descartado ${evento.tipo}: ${resultado.error.issues.map((i) => i.message).join("; ")}`
-    );
+    logEvento("descartou", evento.tipo, null, evento.correlationId, {
+      motivo: resultado.error.issues.map((i) => i.message).join("; "),
+    });
   }
   return resultado.success;
 }
@@ -30,9 +31,9 @@ async function aoReservar(evento: EnvelopeRecebido): Promise<void> {
 
   const dados = estoqueReservadoDadosSchema.safeParse(evento.dados);
   if (!dados.success) {
-    console.error(
-      `[correlationId=${evento.correlationId}] evento inválido descartado ${evento.tipo}: dados inválidos`
-    );
+    logEvento("descartou", evento.tipo, evento.pedidoId, evento.correlationId, {
+      motivo: "dados inválidos",
+    });
     return;
   }
 
@@ -44,9 +45,9 @@ async function aoFaltarEstoque(evento: EnvelopeRecebido): Promise<void> {
 
   const dados = estoqueInsuficienteDadosSchema.safeParse(evento.dados);
   if (!dados.success) {
-    console.error(
-      `[correlationId=${evento.correlationId}] evento inválido descartado ${evento.tipo}: ${dados.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`
-    );
+    logEvento("descartou", evento.tipo, evento.pedidoId, evento.correlationId, {
+      motivo: dados.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+    });
     return;
   }
 

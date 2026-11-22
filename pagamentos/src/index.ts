@@ -2,6 +2,7 @@ import express from "express";
 import { env } from "./config/env.js";
 import routes from "./routes/routes.js";
 import { errorHandler } from "./middleware/errorHandler.js";
+import { requestLog } from "./middleware/requestLog.js";
 import { prisma } from "./config/db.js";
 import { conectarProducer, desconectarKafka, garantirTopicos } from "./config/kafka.js";
 import { iniciarConsumerEventos } from "./consumers/eventos.consumer.js";
@@ -9,6 +10,7 @@ import { desligarCircuito } from "./banco.js";
 
 const app = express();
 
+app.use(requestLog); // antes do express.json() e das rotas; /health fica fora do log
 app.use(express.json());
 
 app.use(routes);

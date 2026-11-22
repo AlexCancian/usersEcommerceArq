@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  Admin,
   Consumer,
   EachMessagePayload,
   Kafka,
@@ -15,6 +16,8 @@ import {
   Topico,
   TOPICOS,
 } from "../utils/eventos.js";
+import { comLimite } from "../utils/health.js";
+import { descreverErro, logEvento } from "../utils/log.js";
 
 // Cliente único por processo (aula 08, slide "KAFKAJS: PUBLICAR")
 const kafka = new Kafka({
@@ -77,9 +80,7 @@ export async function publicar<TDados>(
     messages: [{ key: pedidoId, value: JSON.stringify(envelope) }],
   });
 
-  console.log(
-    `[correlationId=${correlationId}] publicado ${tipo} pedidoId=${pedidoId} topico=${topico}`
-  );
+  logEvento("publicou", tipo, pedidoId, correlationId, { topico });
   return envelope;
 }
 
@@ -100,6 +101,22 @@ function lerEnvelope(bruto: string | undefined): EnvelopeRecebido | string {
   return resultado.data;
 }
 
+// Para o log de "descartou": pedidoId/correlationId do JSON bruto, só se forem strings seguras.
+function extrairIds(bruto: string | undefined): { pedidoId: string | null; correlationId: string | null } {
+  const vazio = { pedidoId: null, correlationId: null };
+  if (!bruto) return vazio;
+  try {
+    const json: unknown = JSON.parse(bruto);
+    if (typeof json !== "object" || json === null) return vazio;
+    const { pedidoId, correlationId } = json as Record<string, unknown>;
+    const seguro = (v: unknown): string | null =>
+      typeof v === "string" && /^[A-Za-z0-9-]{1,64}$/.test(v) ? v : null;
+    return { pedidoId: seguro(pedidoId), correlationId: seguro(correlationId) };
+  } catch {
+    return vazio;
+  }
+}
+
 export async function iniciarConsumer(
   groupId: string,
   topicos: Topico[],
@@ -113,33 +130,94 @@ export async function iniciarConsumer(
 
   await consumer.run({
     eachMessage: async ({ topic, partition, message }: EachMessagePayload) => {
-      const envelope = lerEnvelope(message.value?.toString());
+      const bruto = message.value?.toString();
+      const envelope = lerEnvelope(bruto);
       if (typeof envelope === "string") {
         // D06: mensagem inválida é descartada (sem DLQ); retry não a consertaria.
-        console.error(
-          `[correlationId=-] evento inválido descartado topico=${topic} offset=${message.offset}: ${envelope}`
-        );
+        const ids = extrairIds(bruto);
+        logEvento("descartou", "evento-invalido", ids.pedidoId, ids.correlationId, {
+          topico: topic,
+          offset: message.offset,
+          motivo: envelope,
+        });
         return;
       }
 
       const tratar = handlers[envelope.tipo];
       if (!tratar) return; // tipo que não me interessa
 
+      logEvento("recebeu", envelope.tipo, envelope.pedidoId, envelope.correlationId, {
+        topico: topic,
+        particao: partition,
+        offset: message.offset,
+      });
+
       // Erro de infraestrutura: loga com o correlationId e relança, o kafkajs reentrega (pelo menos uma vez).
       try {
         await tratar(envelope);
       } catch (erro) {
-        console.error(
-          `[correlationId=${envelope.correlationId}] erro ao tratar ${envelope.tipo} pedidoId=${envelope.pedidoId} topico=${topic} particao=${partition} offset=${message.offset} (será reentregue):`,
-          erro
-        );
+        logEvento("falhou", envelope.tipo, envelope.pedidoId, envelope.correlationId, {
+          topico: topic,
+          particao: partition,
+          offset: message.offset,
+          erro: descreverErro(erro),
+        });
         throw erro;
       }
     },
   });
 }
 
+// ---- Health: admin dedicado, sem retry; resultado vale 5 s e chamadas simultâneas dividem a mesma promessa.
+let adminHealth: Admin | null = null;
+let ultimoTeste: { quando: number; ok: boolean } | null = null;
+let testeEmAndamento: Promise<boolean> | null = null;
+
+async function testarKafka(): Promise<boolean> {
+  try {
+    if (!adminHealth) adminHealth = kafka.admin({ retry: { retries: 0 } });
+    const admin = adminHealth;
+    await comLimite(
+      (async () => {
+        await admin.connect();
+        await admin.describeCluster();
+      })(),
+      2000
+    );
+    return true;
+  } catch {
+    // Descarta o admin para reconectar do zero na próxima checagem.
+    const admin = adminHealth;
+    adminHealth = null;
+    if (admin) {
+      await comLimite(admin.disconnect(), 1000).catch(() => undefined);
+    }
+    return false;
+  }
+}
+
+export function kafkaDisponivel(): Promise<boolean> {
+  if (ultimoTeste && Date.now() - ultimoTeste.quando < 5000) {
+    return Promise.resolve(ultimoTeste.ok);
+  }
+  if (!testeEmAndamento) {
+    testeEmAndamento = testarKafka()
+      .then((ok) => {
+        ultimoTeste = { quando: Date.now(), ok };
+        return ok;
+      })
+      .finally(() => {
+        testeEmAndamento = null;
+      });
+  }
+  return testeEmAndamento;
+}
+
 export async function desconectarKafka(): Promise<void> {
+  if (adminHealth) {
+    await adminHealth.disconnect().catch(() => undefined);
+    adminHealth = null;
+  }
   if (consumer) {
     await consumer.disconnect();
     consumer = null;

@@ -13,8 +13,12 @@ router.get(
   "/",
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const categorias = await listCategoriasService();
-      return res.status(200).json(categorias);
+      const resultado = await listCategoriasService();
+      return res
+        .status(200)
+        .set("X-Cache", resultado.cache)
+        .type("application/json")
+        .send(resultado.json);
     } catch (error) {
       next(error);
     }

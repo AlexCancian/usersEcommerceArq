@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import { AppError } from "../utils/errors.js";
 import { Prisma } from "@prisma/client";
+import { descreverErro, lerRequestId } from "../utils/log.js";
 
 export const errorHandler = (
   err: any,
@@ -47,7 +48,9 @@ export const errorHandler = (
   }
 
   // Erro 500 não tratado: NUNCA expor stack trace ou mensagem técnica do banco
-  console.error("Erro interno não tratado:", err);
+  console.error(
+    `[usuarios] erro 500 ${req.method} ${req.path} correlationId=${lerRequestId(req.header("x-request-id")) ?? "-"} erro=${descreverErro(err)}`
+  );
 
   return res.status(500).json({
     erro: "Erro interno do servidor.",

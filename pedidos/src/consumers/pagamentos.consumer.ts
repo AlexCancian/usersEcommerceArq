@@ -10,14 +10,13 @@ import {
   pedidoIdEventoSchema,
   TIPOS,
 } from "../utils/eventos.js";
+import { logEvento } from "../utils/log.js";
 
 // Aula 09: reações ao tópico pagamentos. Registradas no mesmo consumer do estoque
 // (um consumer por serviço, groupId "pedidos"): ver iniciarConsumerEstoque.
 
 function descartar(evento: EnvelopeRecebido, detalhes: string): void {
-  console.error(
-    `[correlationId=${evento.correlationId}] evento inválido descartado ${evento.tipo} pedidoId=${evento.pedidoId}: ${detalhes}`
-  );
+  logEvento("descartou", evento.tipo, evento.pedidoId, evento.correlationId, { motivo: detalhes });
 }
 
 async function aoAprovarPagamento(evento: EnvelopeRecebido): Promise<void> {

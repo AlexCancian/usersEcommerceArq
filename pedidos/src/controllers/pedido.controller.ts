@@ -1,6 +1,7 @@
 import { Router, Response, NextFunction } from "express";
 import { AuthenticatedRequest, lerIdentidade } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
+import { lerRequestId } from "../utils/log.js";
 import { checkoutSchema, pedidoIdParamSchema } from "../utils/schemas.js";
 import {
   buscarPedidoService,
@@ -20,7 +21,7 @@ router.post(
   validate(checkoutSchema),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const pedido = await checkoutService(req.user!, req.body, req.header("x-request-id"));
+      const pedido = await checkoutService(req.user!, req.body, lerRequestId(req.header("x-request-id")));
       return res.status(202).json(pedido);
     } catch (error) {
       next(error);
@@ -61,7 +62,7 @@ router.post(
       const pedido = await cancelarPedidoService(
         req.params.id,
         req.user!.id,
-        req.header("x-request-id")
+        lerRequestId(req.header("x-request-id"))
       );
       return res.status(200).json(pedido);
     } catch (error) {

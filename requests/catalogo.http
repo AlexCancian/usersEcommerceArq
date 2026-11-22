@@ -40,7 +40,9 @@ Content-Type: application/json
 ### 1. HEALTH CHECK
 ### ------------------------------------------------------------------------------
 
-### 1.1 Health Check (Público) - no gateway: /health/catalogo
+### 1.1 Health Check (Público) - no gateway: /health/catalogo → { servico, status, dependencias: { banco, kafka, cache } }
+###     Cache da vitrine: GET /produtos, /produtos/:id e /categorias respondem com X-Cache: HIT | MISS | OFF
+###     (GET /produtos?ids= não usa cache). Demonstração em requests/observabilidade.http.
 GET {{baseUrl}}/health/catalogo
 
 ### ------------------------------------------------------------------------------

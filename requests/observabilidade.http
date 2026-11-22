@@ -1,0 +1,201 @@
+### ==============================================================================
+### E-Commerce - Observabilidade e cache (aula 10) pelo API Gateway (REST Client)
+###
+###   1. /health de todos os serviços (200, { servico, status, dependencias })
+###   2. Cache da vitrine: X-Cache MISS → HIT, invalidação por PUT, ?ids= sem cache
+###   3. Redis fora → X-Cache: OFF e catálogo "degradado" (200)
+###   4. Banco de pagamentos fora → /health/pagamentos 503 e "unhealthy" em ~30 s
+###   5. Banco do cartão fora (falhaPercent 100) → circuito ABERTO, "degradado" (200)
+###   6. Erros: 404 sem X-Cache, 403 e 401 na escrita do catálogo
+###
+### Os comandos docker abaixo são rodados num terminal, na raiz do projeto.
+### Olhe o cabeçalho X-Cache na resposta (painel de resposta do REST Client).
+### ==============================================================================
+
+@baseUrl = http://localhost:8080
+@bancoUrl = http://localhost:9000
+
+### ------------------------------------------------------------------------------
+### 0. LOGINS
+### ------------------------------------------------------------------------------
+
+### 0.1 Login como Administrador
+# @name loginAdmin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@loja.com",
+  "senha": "admin123"
+}
+
+### Extração do Token do Administrador
+@tokenAdmin ={{loginAdmin.response.body.token}}
+
+### 0.2 Login como Cliente
+# @name loginCliente
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "cliente@loja.com",
+  "senha": "cliente123"
+}
+
+### Extração do Token do Cliente
+@tokenCliente ={{loginCliente.response.body.token}}
+
+### ------------------------------------------------------------------------------
+### 1. HEALTH (público, sem token)
+### Terminal: docker compose ps  → todos "(healthy)"
+### ------------------------------------------------------------------------------
+
+### 1.1 usuarios (Sucesso 200 - { servico, status: "ok", dependencias: { banco } })
+GET {{baseUrl}}/health/usuarios
+
+### 1.2 catalogo (Sucesso 200 - dependencias: { banco, kafka, cache })
+GET {{baseUrl}}/health/catalogo
+
+### 1.3 pedidos (Sucesso 200 - dependencias: { banco, kafka }; não olha o catálogo)
+GET {{baseUrl}}/health/pedidos
+
+### 1.4 pagamentos (Sucesso 200 - dependencias: { banco, kafka, circuitoBancoCartao: FECHADO })
+GET {{baseUrl}}/health/pagamentos
+
+### 1.5 notificacoes (Sucesso 200 - dependencias: { kafka, smtp })
+GET {{baseUrl}}/health/notificacoes
+
+### 1.6 banco-falso, direto na porta 9000 (Sucesso 200 - dependencias: {})
+GET {{bancoUrl}}/health
+
+### ------------------------------------------------------------------------------
+### 2. CACHE DA VITRINE (X-Cache: MISS na 1ª leitura, HIT na 2ª)
+### Para começar do zero: docker compose restart redis (o cache esfria)
+### ------------------------------------------------------------------------------
+
+### 2.1 Roupas, 1ª vez (Sucesso 200 - X-Cache: MISS)
+# @name roupas
+GET {{baseUrl}}/produtos?categoria=roupas
+
+### Extração do ID da primeira roupa
+@produto ={{roupas.response.body.$[0]._id}}
+
+### 2.2 Roupas, 2ª vez (Sucesso 200 - X-Cache: HIT, mesmo corpo)
+GET {{baseUrl}}/produtos?categoria=roupas
+
+### 2.3 Categorias, 1ª vez (Sucesso 200 - X-Cache: MISS; se já houver cache, HIT)
+GET {{baseUrl}}/categorias
+
+### 2.4 Categorias, 2ª vez (Sucesso 200 - X-Cache: HIT)
+GET {{baseUrl}}/categorias
+
+### 2.5 Produto por id, 1ª vez (Sucesso 200 - X-Cache: MISS)
+GET {{baseUrl}}/produtos/{{produto}}
+
+### 2.6 Produto por id, 2ª vez (Sucesso 200 - X-Cache: HIT)
+GET {{baseUrl}}/produtos/{{produto}}
+
+### 2.7 Busca por ids, usada pelo checkout (Sucesso 200 - SEM X-Cache: nunca é cacheada)
+GET {{baseUrl}}/produtos?ids={{produto}}
+
+### ------------------------------------------------------------------------------
+### 3. INVALIDAÇÃO: o admin muda o preço e o próximo GET já mostra o novo
+### ------------------------------------------------------------------------------
+
+### 3.1 Alterar o preço como Admin (Sucesso 200 - a versão do cache sobe)
+PUT {{baseUrl}}/produtos/{{produto}}
+Authorization: Bearer {{tokenAdmin}}
+Content-Type: application/json
+
+{
+  "preco": 99.90
+}
+
+### 3.2 Roupas de novo (Sucesso 200 - X-Cache: MISS, com o preço 99.9 no primeiro item alterado)
+GET {{baseUrl}}/produtos?categoria=roupas
+
+### 3.3 Roupas outra vez (Sucesso 200 - X-Cache: HIT, já com o preço novo)
+GET {{baseUrl}}/produtos?categoria=roupas
+
+### ------------------------------------------------------------------------------
+### 4. REDIS FORA (a vitrine continua respondendo)
+### Terminal: docker compose stop redis
+### ------------------------------------------------------------------------------
+
+### 4.1 Roupas (Sucesso 200 - X-Cache: OFF, vinda do Mongo, sem atraso perceptível)
+GET {{baseUrl}}/produtos?categoria=roupas
+
+### 4.2 Health do catálogo (Sucesso 200 - status "degradado", dependencias.cache "fora")
+GET {{baseUrl}}/health/catalogo
+
+### Terminal: docker compose start redis
+### Depois de alguns segundos o catálogo reconecta sozinho (sem reiniciar): X-Cache volta a MISS e HIT.
+
+### ------------------------------------------------------------------------------
+### 5. BANCO DE PAGAMENTOS FORA (dependência essencial → 503)
+### Terminal: docker compose stop postgres-pagamentos
+### ------------------------------------------------------------------------------
+
+### 5.1 Health do pagamentos (Erro 503 - status "fora do ar", dependencias.banco "fora", em < 2,5 s)
+GET {{baseUrl}}/health/pagamentos
+
+### Terminal: docker compose ps → em cerca de 30 s o serviço pagamentos aparece "(unhealthy)"
+### Terminal: docker compose start postgres-pagamentos → volta a "(healthy)"
+
+### ------------------------------------------------------------------------------
+### 6. BANCO DO CARTÃO FORA (dependência não essencial → degradado)
+### ------------------------------------------------------------------------------
+
+### 6.1 O banco falha em 100% das chamadas (Sucesso 200)
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "falhaPercent": 100
+}
+
+### 6.2 Faça 2 ou 3 compras (requests/fluxo-compra.http ou http/fluxo-completo.http) para o circuito abrir.
+###     Depois olhe o health (Sucesso 200 - status "degradado", circuitoBancoCartao "ABERTO";
+###     ~15 s depois "MEIO-ABERTO").
+GET {{baseUrl}}/health/pagamentos
+
+### 6.3 Banco de volta ao normal (Sucesso 200); uma compra boa fecha o circuito (FECHADO)
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "falhaPercent": 0,
+  "latenciaMs": 0
+}
+
+### ------------------------------------------------------------------------------
+### 7. CASOS DE ERRO
+### ------------------------------------------------------------------------------
+
+### 7.1 Produto inexistente (Erro 404 - SEM X-Cache, nada é guardado no cache)
+GET {{baseUrl}}/produtos/produto-que-nao-existe
+
+### 7.2 Alterar produto como Cliente (Erro 403 - Kong acl)
+PUT {{baseUrl}}/produtos/{{produto}}
+Authorization: Bearer {{tokenCliente}}
+Content-Type: application/json
+
+{
+  "preco": 1.00
+}
+
+### 7.3 Alterar produto sem token (Erro 401 - Kong jwt)
+PUT {{baseUrl}}/produtos/{{produto}}
+Content-Type: application/json
+
+{
+  "preco": 1.00
+}
+
+### ------------------------------------------------------------------------------
+### 8. UMA COMPRA NOS LOGS
+### Pegue o X-Request-Id da resposta de um checkout e rode no terminal:
+###   docker compose logs -t --no-log-prefix | grep <X-Request-Id> | sort
+###   PowerShell: docker compose logs -t --no-log-prefix | Select-String <X-Request-Id> | Sort-Object
+### Aparecem pedidos, catalogo, pagamentos, banco-falso e notificacoes, todos com pedidoId e correlationId.
+### ------------------------------------------------------------------------------
