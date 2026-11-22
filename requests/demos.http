@@ -23,7 +23,7 @@
 ### 0.1 Config atual do banco (Sucesso 200 { latenciaMs, falhaPercent })
 GET {{bancoUrl}}/config
 
-### 0.2 Estado do circuito (Sucesso 200 - circuitoBancoExterno: fechado)
+### 0.2 Estado do circuito (Sucesso 200 - status "ok", dependencias.circuitoBancoCartao: FECHADO)
 GET {{baseUrl}}/health/pagamentos
 
 ### 0.3 Login como Cliente
@@ -230,7 +230,7 @@ Content-Type: application/json
   "falhaPercent": 100
 }
 
-### 3.2 Estado do circuito (aberto → meio-aberto depois de 15 s → fechado depois de uma cobrança boa)
+### 3.2 Estado do circuito (circuitoBancoCartao: ABERTO → MEIO-ABERTO depois de 15 s → FECHADO depois de uma cobrança boa; status "degradado" enquanto não for FECHADO)
 GET {{baseUrl}}/health/pagamentos
 
 ### 3.3 Banco volta

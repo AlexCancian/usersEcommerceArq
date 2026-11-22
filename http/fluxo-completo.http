@@ -1,0 +1,218 @@
+### ==============================================================================
+### E-Commerce - FLUXO COMPLETO (entrega final, aula 10) pelo API Gateway (REST Client)
+###
+### Como usar (nenhum valor para editar: ids e token vêm das respostas, via # @name):
+###   1. docker compose up -d --build        (um comando; espere terminar, o gateway sobe por último)
+###   2. docker compose ps                   (todos "healthy")
+###   3. Rode este arquivo de cima para baixo, uma requisição por vez ("Send Request").
+###      Onde diz "reenvie", repita a requisição até o status mudar (a saga é por eventos).
+###
+### O que ele cobre:
+###   A. login → vitrine → carrinho → checkout (202) → pedido até PAGO → pagamento APROVADO
+###   B. cartão final 0002 → pedido CANCELADO com motivo, estoque de volta
+###   C. cancelamento no meio da cobrança → ESTORNADO (ou CANCELADO), estoque de volta
+###   D. cliente em rota de admin → 403
+###
+### Acompanhar a compra inteira pelos logs (X-Request-Id da resposta do checkout, passo A.3):
+###   docker compose logs -t --no-log-prefix | grep <X-Request-Id> | sort
+###   PowerShell: docker compose logs -t --no-log-prefix | Select-String <X-Request-Id> | Sort-Object
+### Mailpit (e-mails): http://localhost:8025 · Kafka UI: http://localhost:8090
+### ==============================================================================
+
+@baseUrl = http://localhost:8080
+@bancoUrl = http://localhost:9000
+
+### ------------------------------------------------------------------------------
+### 0. PREPARAÇÃO
+### ------------------------------------------------------------------------------
+
+### 0.1 Banco do cartão no normal: latência 0, sem falhas (Sucesso 200). Garante que o arquivo se repete.
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "latenciaMs": 0,
+  "falhaPercent": 0
+}
+
+### ------------------------------------------------------------------------------
+### A. COMPRA APROVADA
+### ------------------------------------------------------------------------------
+
+### A.1 Login como Cliente do seed (Sucesso 200 { token })
+# @name login
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "cliente@loja.com",
+  "senha": "cliente123"
+}
+
+### Extração do Token
+@token ={{login.response.body.token}}
+
+### A.2 Vitrine: livros (Sucesso 200; veja o cabeçalho X-Cache: MISS na 1ª vez, HIT depois)
+# @name vitrine
+GET {{baseUrl}}/produtos?categoria=livros
+
+### Extração do ID do primeiro livro
+@produto ={{vitrine.response.body.$[0]._id}}
+
+### A.3 Adicionar ao Carrinho (Sucesso 201)
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "produto_id": "{{produto}}",
+  "quantidade": 1
+}
+
+### A.4 Checkout com Pix (Sucesso 202 - AGUARDANDO_ESTOQUE). Anote o X-Request-Id da resposta para o grep.
+# @name checkout
+POST {{baseUrl}}/pedidos
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "endereco_entrega": {
+    "cep": "01310-100",
+    "logradouro": "Avenida Paulista",
+    "numero": "1578",
+    "cidade": "São Paulo",
+    "uf": "SP"
+  },
+  "forma_pagamento": "pix"
+}
+
+### Extração do ID do Pedido
+@pedido ={{checkout.response.body.id}}
+
+### A.5 Pedido (Sucesso 200 - reenvie até status PAGO)
+GET {{baseUrl}}/pedidos/{{pedido}}
+Authorization: Bearer {{token}}
+
+### A.6 Pagamento (Sucesso 200 - APROVADO, com codigo_transacao TX-...)
+GET {{baseUrl}}/pagamentos/{{pedido}}
+Authorization: Bearer {{token}}
+
+### A.7 Estoque do produto depois da compra aprovada (anote disponivel e reservado)
+GET {{baseUrl}}/produtos/{{produto}}
+
+### ------------------------------------------------------------------------------
+### B. CARTÃO RECUSADO (final 0002): a saga compensa
+### ------------------------------------------------------------------------------
+
+### B.1 Adicionar ao Carrinho (Sucesso 201)
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "produto_id": "{{produto}}",
+  "quantidade": 1
+}
+
+### B.2 Checkout com Cartão 4000000000000002 (Sucesso 202 - o banco responde 402)
+# @name checkoutRecusado
+POST {{baseUrl}}/pedidos
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "endereco_entrega": {
+    "cep": "01310-100",
+    "logradouro": "Avenida Paulista",
+    "numero": "1578",
+    "cidade": "São Paulo",
+    "uf": "SP"
+  },
+  "forma_pagamento": "cartao",
+  "numero_cartao": "4000000000000002"
+}
+
+### Extração do ID do Pedido
+@pedidoRecusado ={{checkoutRecusado.response.body.id}}
+
+### B.3 Pedido (Sucesso 200 - reenvie até CANCELADO, com motivo_cancelamento "Pagamento recusado: saldo insuficiente")
+GET {{baseUrl}}/pedidos/{{pedidoRecusado}}
+Authorization: Bearer {{token}}
+
+### B.4 Estoque do produto (disponivel igual ao A.7: o catálogo devolveu a reserva)
+GET {{baseUrl}}/produtos/{{produto}}
+
+### ------------------------------------------------------------------------------
+### C. CANCELAMENTO COM ESTORNO
+### ------------------------------------------------------------------------------
+### O banco fica lento (1,5 s, dentro do timeout de 2 s) para dar tempo de cancelar com a cobrança
+### em andamento. Rode C.2 a C.4 em sequência, rápido (o C.4 logo depois do C.3).
+### Se o C.4 devolver 409, a compra já foi concluída (PAGO): repita a partir do C.2.
+
+### C.1 Banco lento: latência 1500 ms (Sucesso 200)
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "latenciaMs": 1500
+}
+
+### C.2 Adicionar ao Carrinho (Sucesso 201)
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "produto_id": "{{produto}}",
+  "quantidade": 1
+}
+
+### C.3 Checkout com Cartão 4111111111111111 (Sucesso 202)
+# @name checkoutCancelado
+POST {{baseUrl}}/pedidos
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "endereco_entrega": {
+    "cep": "01310-100",
+    "logradouro": "Avenida Paulista",
+    "numero": "1578",
+    "cidade": "São Paulo",
+    "uf": "SP"
+  },
+  "forma_pagamento": "cartao",
+  "numero_cartao": "4111111111111111"
+}
+
+### Extração do ID do Pedido
+@pedidoCancelado ={{checkoutCancelado.response.body.id}}
+
+### C.4 Cancelar JÁ (Sucesso 200 - CANCELADO, publica pedido.cancelado)
+POST {{baseUrl}}/pedidos/{{pedidoCancelado}}/cancelar
+Authorization: Bearer {{token}}
+
+### C.5 Pagamento (Sucesso 200 - reenvie até estabilizar)
+###   ESTORNADO: o banco cobrou antes do cancelamento chegar e o pagamentos estornou
+###   CANCELADO: o cancelamento chegou antes da cobrança e o banco nem foi chamado
+GET {{baseUrl}}/pagamentos/{{pedidoCancelado}}
+Authorization: Bearer {{token}}
+
+### C.6 Estoque do produto (disponivel igual ao A.7: a reserva voltou)
+GET {{baseUrl}}/produtos/{{produto}}
+
+### C.7 Banco de volta ao normal: latência 0 (Sucesso 200)
+POST {{bancoUrl}}/config
+Content-Type: application/json
+
+{
+  "latenciaMs": 0
+}
+
+### ------------------------------------------------------------------------------
+### D. CLIENTE EM ROTA DE ADMIN
+### ------------------------------------------------------------------------------
+
+### D.1 Listar usuários com o token do cliente (Erro 403 - quem decide é o Kong, pelo acl)
+GET {{baseUrl}}/usuarios
+Authorization: Bearer {{token}}

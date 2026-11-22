@@ -2,6 +2,24 @@
 # (ecommerce-net); os nomes usuarios, catalogo e pedidos são o DNS dessa rede.
 # Aula 08: exceções de porta para ferramentas locais, Kafka UI (8090) e Mailpit (8025) (ADR 007).
 # Aula 09: pagamentos (+ pagamentos-db) e o banco-falso, o banco do cartão (sistema externo) na 9000 (ADR 009).
+# Aula 10: redis (cache da vitrine, sem porta), healthcheck em todos os serviços e depends_on com
+# service_healthy (ADR 0011 e 0012). Sobe do zero com `docker compose up -d --build`, sem .env.
+
+# Healthcheck dos serviços de aplicação: chama o /health do próprio container (200 = healthy,
+# 503 ou sem resposta = falha). Três falhas seguidas (~30 s) = unhealthy; o Docker só marca, não reinicia.
+x-healthcheck-app: &healthcheck-app
+  test:
+    [
+      "CMD",
+      "node",
+      "-e",
+      "fetch('http://127.0.0.1:3000/health',{signal:AbortSignal.timeout(2500)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+    ]
+  interval: 10s
+  timeout: 3s
+  retries: 3
+  start_period: 40s
+
 services:
   # ------------------------------------------------------------- API Gateway
   gateway:
@@ -29,11 +47,24 @@ services:
       KONG_ADMIN_GUI_LISTEN: 0.0.0.0:8002
       KONG_UNTRUSTED_LUA_SANDBOX_REQUIRES: kong.plugins.jwt.jwt_parser
       JWT_SECRET: ${JWT_SECRET:-supersecret_ecommerce_jwt_key_2026}
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # O gateway sobe por último: só depois de todos os serviços que ele expõe estarem healthy.
     depends_on:
-      - usuarios
-      - catalogo
-      - pedidos
-      - pagamentos
+      usuarios:
+        condition: service_healthy
+      catalogo:
+        condition: service_healthy
+      pedidos:
+        condition: service_healthy
+      pagamentos:
+        condition: service_healthy
+      notificacoes:
+        condition: service_healthy
     networks:
       - ecommerce-net
 
@@ -68,6 +99,7 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres-usuarios:5432/ecommerce_usuarios?schema=public
       # Mesmo segredo do gateway: usuarios assina, o Kong confere.
       JWT_SECRET: ${JWT_SECRET:-supersecret_ecommerce_jwt_key_2026}
+    healthcheck: *healthcheck-app
     depends_on:
       postgres-usuarios:
         condition: service_healthy
@@ -81,6 +113,12 @@ services:
     restart: unless-stopped
     volumes:
       - mongo_catalogo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     networks:
       - ecommerce-net
 
@@ -96,10 +134,16 @@ services:
       NODE_ENV: production
       MONGO_URI: mongodb://mongo-catalogo:27017/ecommerce_catalogo
       KAFKA_BROKERS: kafka:9092
+      # Cache da vitrine (ADR 0011): sem o Redis a vitrine continua respondendo (X-Cache: OFF).
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      CACHE_TTL_SEGUNDOS: ${CACHE_TTL_SEGUNDOS:-60}
+    healthcheck: *healthcheck-app
     depends_on:
       mongo-catalogo:
-        condition: service_started
+        condition: service_healthy
       kafka:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       - ecommerce-net
@@ -137,11 +181,11 @@ services:
       # Chamada síncrona direta pela rede interna, sem passar pelo gateway
       CATALOGO_URL: http://catalogo:3000
       KAFKA_BROKERS: kafka:9092
+    healthcheck: *healthcheck-app
+    # Sem depends_on do catálogo: catálogo fora já vira 503 no checkout, e o resto do pedidos funciona.
     depends_on:
       postgres-pedidos:
         condition: service_healthy
-      catalogo:
-        condition: service_started
       kafka:
         condition: service_healthy
     networks:
@@ -205,10 +249,17 @@ services:
     restart: unless-stopped
     ports:
       - "8025:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     networks:
       - ecommerce-net
 
-  # Só escuta eventos: sem banco, sem rota no Kong, sem porta.
+  # Só escuta eventos: sem banco e sem porta publicada. O único HTTP é o /health (node:http, sem Express),
+  # exposto no Kong como /health/notificacoes.
   notificacoes:
     build:
       context: ./notificacoes
@@ -217,16 +268,18 @@ services:
     restart: unless-stopped
     stop_grace_period: 10s
     environment:
+      PORT: 3000
       NODE_ENV: production
       KAFKA_BROKERS: kafka:9092
       SMTP_HOST: mailpit
       SMTP_PORT: 1025
       MAIL_FROM: "Loja <nao-responda@loja.com>"
+    healthcheck: *healthcheck-app
     depends_on:
       kafka:
         condition: service_healthy
       mailpit:
-        condition: service_started
+        condition: service_healthy
     networks:
       - ecommerce-net
 
@@ -264,13 +317,14 @@ services:
       KAFKA_BROKERS: kafka:9092
       # Chamada direta pela rede interna ao banco do cartão (timeout, retry e circuit breaker)
       BANCO_URL: http://banco-falso:3000
+    healthcheck: *healthcheck-app
     depends_on:
       postgres-pagamentos:
         condition: service_healthy
       kafka:
         condition: service_healthy
       banco-falso:
-        condition: service_started
+        condition: service_healthy
     networks:
       - ecommerce-net
 
@@ -289,6 +343,25 @@ services:
       NODE_ENV: production
       LATENCIA_MS: 0
       FALHA_PERCENT: 0
+    healthcheck: *healthcheck-app
+    networks:
+      - ecommerce-net
+
+  # ------------------------------------------------------------------- redis
+  # Cache da vitrine do catálogo (aula 10, ADR 0011). Sem porta e sem volume: não persiste nada
+  # (reiniciar = cache vazio, e a versão do cache some junto). volatile-lru só despeja chaves com TTL,
+  # protegendo catalogo:versao, que não tem.
+  redis:
+    image: redis:7-alpine
+    container_name: ecommerce-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "volatile-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     networks:
       - ecommerce-net
 

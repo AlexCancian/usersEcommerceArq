@@ -1,0 +1,665 @@
+                                    ARQUITETURA DE
+
+        SISTEMAS
+
+                                   E-COMMERCE · PARTE 5: OBSERVABILIDADE E CACHE
+
+Prof. Augusto Gehrke
+                       CONTEÚDO
+
+1. Observabilidade: logs, métricas e traces
+2. Health checks: ok, degradado, fora do ar
+3. Cache: onde, como e o que nunca cachear
+4. Observabilidade e cache na prática (docker-class)
+5. Fechando o sistema: a última entrega
+6. README, decisões e diagrama
+7. Todos os requisitos do projeto, do começo ao fim
+     HOJE: A ÚLTIMA ETAPA
+
+O sistema já vende, reserva, cobra e desfaz. Falta enxergá-lo
+funcionando, e deixá-lo pronto para alguém de fora subir e
+entender.
+
+  1. Observabilidade: quando der problema, como saber, e onde
+  2. Cache: deixar mais rápido o que é lido toda hora, no catálogo
+  3. Fechar o projeto: README, decisões, diagrama e a saga inteira num .http
+  4. Tempo em aula para terminar o que ficou para trás
+
+É A ÚLTIMA ENTREGA DO G2. A próxima aula é demonstração.
+          O SISTEMA QUE VOCÊS CONSTRUÍRAM
+
+                                                  Cliente (.http)
+
+                                                   KONG :8080
+
+                                           JWT · perfis · rate limit · X-Request-Id
+
+usuarios  catalogo       pedidos   pagamentos                                        notificacoes
+
+Postgres  Mongo + Redis  Postgres  Postgres                                          Mailpit
+
+                                   banco-falso :9000
+
+                                                                      KAFKA pedidos · estoque · pagamentos
+
+Cinco serviços, quatro bancos, um broker, um gateway e um sistema externo. Uma compra passa por quase todos.
+A pergunta de hoje: um cliente diz "minha compra não terminou". Em qual dessas caixas está o problema?
+MONITORAR × OBSERVAR
+
+              MONITORAR                                  OBSERVAR
+
+  Responde perguntas que você já sabia    Responde perguntas que você não previu:
+fazer: está no ar? a CPU passou de 80%?     por que só os pedidos com pix ficaram
+                                                        lentos ontem às 15h?
+ Painéis e alertas definidos de antemão.
+                                             Exige dados ricos: logs com contexto,
+             Diz QUE algo quebrou.                          métricas, traces.
+
+                                                       Diz POR QUE quebrou.
+
+Num monolito, um log e um debugger resolviam. Em microserviços, o erro de um serviço aparece como sintoma
+em outro: sem observabilidade, é procurar agulha em cinco palheiros.
+                                  OS TRÊS PILARES
+
+LOGS                              MÉTRICAS                     TRACES
+
+  O que aconteceu, linha por      Números ao longo do tempo.    O caminho de uma requisição
+  linha, com hora e contexto.     Quantos pedidos por minuto,  pelos serviços, com o tempo de
+"pedido 7: tentativa 2/3 falhou:  quantos erros, quão rápido.
+                                                                            cada trecho.
+               timeout".
+
+Logs contam a história de UM caso. Métricas mostram a tendência de TODOS. Traces mostram ONDE o tempo
+foi gasto.
+Hoje: logs correlacionados e health checks, que vocês entregam. Métricas e traces de verdade (Prometheus,
+Grafana, Jaeger) ficam para a demonstração da próxima aula.
+       LOGS: O QUE ESCREVER
+
+Nível  Para quê                                        Exemplo no projeto
+ERROR  algo falhou e precisa de atenção                estorno do pedido 7 falhou
+WARN   algo estranho, mas o sistema seguiu             tentativa 1/3 falhou; circuito aberto
+INFO   os fatos do negócio                             pedido 7 criado; pagamento aprovado
+DEBUG  detalhe para investigar, desligado em produção  corpo da resposta do banco
+
+Toda linha precisa responder: quando, qual serviço, o quê, de qual pedido e de qual requisição (o correlationId).
+NUNCA no log: senha, token JWT, número de cartão, CPF, e-mail completo de cliente. Log é lido por muita gente e guardado
+por muito tempo; vazamento por log é dos mais comuns.
+Nem demais, nem de menos: logar cada health check a cada 10 s enterra o que importa (por isso o order-service pula o /
+health).
+                                               LOGS ESTRUTURADOS
+
+       // texto: fácil de ler, difícil de pesquisar
+       [pagamentos] pedido 7: tentativa 2/3 falhou: sem resposta em 2000 ms (timeout)
+
+        // JSON: cada informação é um campo
+        { "nivel": "warn", "servico": "pagamentos", "pedidoId": "7", "tentativa": 2,
+
+           "erro": "timeout", "correlationId": "34781360-...", "em": "2026-11-12T20:57:19Z" }
+
+Com campos, a ferramenta de logs responde perguntas: "todos os erro=timeout do serviço pagamentos na última hora",
+"quantas tentativas por pedido, em média".
+Bibliotecas: pino ou winston (Node), Logback (Java), structlog (Python).
+Para onde vão: os containers escrevem na saída padrão; uma ferramenta junta tudo num lugar só: Loki + Grafana,
+Elasticsearch + Kibana, ou o serviço da nuvem.
+No projeto: texto está bom, desde que cada linha tenha o pedidoId e o correlationId.
+                                          UMA COMPRA, CINCO SERVIÇOS, UM ID
+
+        $ docker compose logs -t --no-log-prefix | grep e53ff68b | sort
+        20:28:59.717 [Pedidos Service] POST /orders | x-request-id=e53ff68b-...
+        20:28:59.755 [order-service] publicou pedido.criado pedido=2 req=e53ff68b-...
+        20:28:59.763 [stock-service] recebeu pedido.criado pedido=2 req=e53ff68b-...
+        20:28:59.775 [stock-service] publicou estoque.reservado pedido=2 req=e53ff68b-...
+        20:28:59.783 [payment-service] recebeu estoque.reservado pedido=2 req=e53ff68b-...
+        20:29:00.130 [payment-service] publicou pagamento.aprovado pedido=2 req=e53ff68b-...
+        20:29:00.132 [order-service] recebeu pagamento.aprovado pedido=2 req=e53ff68b-...
+        20:29:00.132 [notification-service] recebeu pagamento.aprovado pedido=2 req=e53ff68b-...
+
+O caminho do id: o Kong cria o X-Request-Id → pedidos recebe no cabeçalho → copia para o correlationId do evento → cada serviço
+que recebe o evento copia para o próximo.
+Já é quase um trace: dá para ver que o pagamento levou ~350 ms, o passo mais lento. Um trace de verdade mostra isso num gráfico,
+sem grep.
+                                 MÉTRICAS: O QUE MEDIR
+
+RATE                             ERRORS                 DURATION
+
+quantas requisições por segundo  quantas deram erro     quanto tempo levaram
+
+O método RED, para cada serviço. Para recursos (CPU, memória, disco), o método USE: uso, saturação e erros.
+
+Tempo do checkout                Valor               A média engana: 180 ms parece ótimo, mas 1
+média                            180 ms              em cada 100 clientes espera mais de 2 s.
+p50 (metade é mais rápida)       120 ms
+p95                              450 ms              Por isso se olha o p95 e o p99: os mais lentos
+p99 (1 em 100 é pior)            2.300 ms            são exatamente os clientes que desistem da
+                                                     compra.
+
+                                                     Números de exemplo; na demonstração da
+                                                     próxima aula, os de verdade, num painel.
+                                      O QUE VIGIAR NO E-COMMERCE
+
+Os quatro sinais de ouro (livro de SRE do Google): latência, tráfego, erros e saturação. No nosso sistema:
+
+Sinal                 Onde ver                                Preocupa quando
+Latência do checkout  log do Kong, p99                        passa de 1 s
+Tráfego               pedidos por minuto                      cai de repente (ninguém consegue comprar)
+Erros                 respostas 5xx no Kong; pagamentos ERRO  sobem
+Saturação             lag dos consumers no Kafka              só cresce
+Dependência externa   estado do circuito do banco             ABERTO por minutos
+Saúde                 status unhealthy no Docker              qualquer um
+
+O lag do Kafka é o sinal mais honesto de um sistema por eventos: os serviços podem estar "no ar" e o trabalho acumulando
+sem ninguém ver.
+         TRACES: ONDE O TEMPO FOI GASTO
+
+1000 ms                      POST /pedidos (Kong)
+ 280 ms
+ 160 ms  pedidos: checkout
+ 120 ms
+ 520 ms  pedidos → catálogo
+ 460 ms           (HTTP)
+
+                             catálogo: reserva
+
+                                                      pagamentos: cobrar
+                                                pagamentos → banco (HTTP)
+
+Cada barra é um span: um trecho do trabalho, com início e duração. Juntas, formam o trace de uma requisição.
+Num olhar: quase metade do tempo foi a chamada ao banco do cartão.
+Como se faz: OpenTelemetry nos serviços (o padrão do mercado) e o Jaeger para ver. O id do trace viaja nos cabeçalhos e nos
+eventos, como o nosso correlationId. Demonstração na próxima aula.
+            HEALTH CHECK: ESTÁ TUDO BEM?
+
+GET /health/pagamentos
+{ "servico": "payment-service", "status": "degradado",
+
+   "dependencias": { "banco": "ok", "kafka": "ok", "circuitoBancoCartao": "ABERTO" } }
+
+Status      Quer dizer                                      Código HTTP
+ok          tudo funcionando                                200
+degradado   funciona, mas pior: sem cache, circuito aberto  200
+fora do ar  não consegue trabalhar: sem banco ou sem Kafka  503
+
+Um bom health testa de verdade: um SELECT 1 no banco, uma pergunta ao Kafka, um PING no Redis. "O processo
+respondeu" não diz nada sobre as dependências.
+Rápido e barato: ele é chamado a cada 10 s; nada de consulta pesada nem chamada a outros serviços.
+                          VIVO × PRONTO
+
+Pergunta                  Se a resposta for não                     Exemplo
+                          reiniciar o container                     o processo travou num laço infinito
+Está vivo? (liveness)
+não olha dependências     parar de mandar requisições até melhorar  ainda subindo, ou sem o próprio banco
+
+Está pronto? (readiness)
+olha as dependências
+
+Sem o próprio banco: vivo, mas não pronto. O readiness responde 503. O liveness continua 200: reiniciar o serviço não traria
+o banco de volta.
+Sem o banco do cartão: pronto, só degradado. O pagamento faz o que deve, recusar rápido: 200. Um 503 o tiraria do ar à
+toa.
+Dependência que só acelera (o cache) nunca tira o serviço do ar: no máximo, degradado.
+No docker-class, dois endpoints: /health/live (só o processo) e /health/ready (as dependências; o /health é o mesmo). No
+projeto, um /health com os três estados basta.
+O DOCKER DE OLHO
+
+stock-service:                                       A cada 10 s o Docker chama o /health de dentro do
+   build: ./stock-service                            container. Resposta 2xx: healthy. Três falhas seguidas:
+   healthcheck:                                      unhealthy.
+       test: ["CMD", "wget", "-qO-",
+                    "http://localhost:3000/health"]  start_period: tempo de folga para o serviço subir (esperar
+       interval: 10s                                 o Kafka) sem ser marcado como doente.
+       timeout: 3s
+       retries: 3                                    depends_on com service_healthy: quem depende só
+       start_period: 30s                             sobe quando o outro está de fato pronto, não só iniciado.
+
+                                                     O Docker só marca. Quem age (reinicia, tira do
+                                                     balanceamento) é um orquestrador, como o Kubernetes.
+
+$ docker compose ps
+stock-service Up 2 minutes (healthy)
+payment-service Up 2 minutes (unhealthy)
+ALERTAS: ACORDAR ALGUÉM POR QUÊ?
+
+ ALERTAR SOBRE O SINTOMA                    NÃO SOBRE CADA CAUSA
+
+             O que o cliente sente.      "CPU passou de 70%." E daí, se o cliente
+                                                              não sentiu?
+"Mais de 2% dos checkouts com erro nos
+               últimos 5 minutos."       Alerta demais vira ruído: a equipe para de
+                                                                  olhar.
+"Lag do Kafka crescendo há 10 minutos."
+                                            Causas viram painel, para investigar
+                                                                 depois.
+
+Regra: todo alerta precisa de uma ação. Se a resposta para "o que eu faço quando isso tocar?" é "nada", não é
+alerta.
+      CACHE
+
+O trabalho mais rápido é o que não precisa ser feito.
+Cache é guardar o resultado de um trabalho caro, num lugar rápido,
+para não fazer de novo na próxima vez.
+A vitrine é lida mil vezes para cada vez que um produto muda.
+
+NO PROJETO: obrigatório, na vitrine do catálogo.
+                           CACHE EXISTE EM TODA PARTE
+
+        Navegador                      CDN                       Gateway               Aplicação                 Banco
+
+Cache-Control: max-age=60  imagens e páginas, perto do  plugin proxy-cache do Kong  Redis: resultado de  o próprio banco guarda
+                                         cliente                                          consultas       páginas em memória
+
+Quanto mais perto do cliente, mais rápido, e mais difícil de apagar quando o dado muda: não dá para limpar o cache do
+navegador de cada cliente.
+Hoje: cache na aplicação, com Redis. É o que dá mais controle: o próprio serviço decide o que guardar e quando apagar.
+Redis: um banco chave-valor em memória. Respostas em microssegundos, chaves com validade (TTL) e comandos simples:
+GET, SET, DEL, INCR, EXPIRE.
+                                     O PADRÃO CACHE-ASIDE
+
+async function lerOuBuscar(chave, buscar) {                                1. Procura no cache. Achou: HIT, devolve.
+                                                                           2. Não achou: MISS. Busca no banco e
+   try {                                                                   guarda por 30 s (EX = TTL).
+                                                                           3. Redis fora: OFF. Vai direto ao banco: o
+      const guardado = await redis.get(chave);                             cache acelera, não sustenta.
+
+      if (guardado) return { valor: JSON.parse(guardado), cache: 'HIT' };  O cabeçalho X-Cache na resposta deixa ver
+                                                                           qual dos três aconteceu. Na docker-class:
+   } catch {                                                               MISS 0,51 s, HIT 0,008 s.
+
+      return { valor: await buscar(), cache: 'OFF' }; // Redis fora
+
+   }
+
+   const valor = await buscar();                // MISS: vai ao banco
+
+   await redis.set(chave, JSON.stringify(valor), 'EX', 30);
+
+   return { valor, cache: 'MISS' };
+
+}
+                             O DIFÍCIL: QUANDO APAGAR
+
+"Só há duas coisas difíceis em computação: invalidar cache e dar nome às coisas." (Phil Karlton)
+
+Estratégia      Como                                                    Onde vimos
+Só o TTL        a chave expira sozinha; o dado pode ficar velho até lá  rede de segurança de todas
+Apagar a chave                                                          docker-class: estoque:lista
+Versão          toda escrita faz DEL; a próxima leitura busca o novo    referência: catalogo:versao
+                toda escrita faz INCR numa versão; as chaves antigas
+                param de ser lidas e expiram
+
+Apagar é simples quando há uma chave só. Com muitas (cada filtro da vitrine é uma chave), a versão apaga todas de uma
+vez com um único comando.
+Esqueceu de invalidar? O cliente vê o preço antigo até o TTL vencer. Por isso o TTL é curto para dados que mudam e longo
+para dados que quase não mudam.
+VERSÃO NA PRÁTICA 1/2: O QUE O REDIS GUARDA
+
+chave                       valor
+catalogo:versao             7
+catalogo:v7:roupas          [ {camiseta, R$ 59,90}, {moletom, ...}, {calça, ...} ]
+catalogo:v7:busca=camiseta  [ {camiseta, R$ 59,90}, {camiseta estampada, ...} ]
+catalogo:v7:todos           [ {smartphone, ...}, {camiseta, R$ 59,90}, ... os 10 produtos ]
+
+A chave não é um produto: é uma resposta inteira. catalogo:v7:roupas guarda a lista toda da categoria roupas, com várias peças
+dentro: exatamente o JSON que a rota devolveu.
+A camiseta aparece em três chaves, porque está em três listagens: roupas, a busca e a página com todos.
+O número da versão não fica dentro das peças. Ele fica guardado num lugar só (catalogo:versao) e aparece no NOME das chaves,
+montado pelo código na hora de ler: catalogo:v + versão + :roupas.
+Como numa banca de jornal: estas são as cópias da "edição 7".
+01                     VERSÃO NA PRÁTICA 2/2: O ADMIN MUDA O PREÇO
+02
+03  O admin muda a camiseta para R$ 49,90. O serviço faz só INCR catalogo:versao: o valor vai de 7 para 8. Nenhuma lista é
+    editada ou apagada.
+    Um cliente abre roupas. O código lê a versão (8), monta o nome catalogo:v8:roupas e procura: não existe. MISS.
+
+    Busca no banco e guarda em catalogo:v8:roupas, já com R$ 49,90. As outras listagens fazem o mesmo quando alguém as
+    abrir.
+
+catalogo:versao             8                   ← ninguém mais lê; some sozinha pelo TTL
+catalogo:v7:roupas          [ ...R$ 59,90... ]  ← idem
+catalogo:v7:busca=camiseta  [ ...R$ 59,90... ]  ← nova, montada no primeiro MISS
+catalogo:v8:roupas          [ ...R$ 49,90... ]
+
+Mudar um número muda o NOME que o código procura, não o conteúdo de nada. As listas velhas ficam com um nome que
+ninguém mais procura e vencem sozinhas. A banca lançou a edição 8.
+                           O QUE CACHEAR (E O QUE NUNCA)
+
+Dado                       Cache?       Por quê
+Vitrine, categorias        sim          lidos o tempo todo, mudam pouco, ver o anterior por segundos não faz mal
+Detalhe de um produto      sim          idem; invalidar quando o admin edita
+Estoque exato no checkout  não          precisa ser o valor de agora: a reserva decide no banco
+Carrinho                   não          é de uma pessoa só e muda a cada clique
+Pagamento, saldo, pedido   nunca        um valor velho aqui custa dinheiro
+Token, sessão              com cuidado  um token revogado pode continuar valendo até expirar
+
+A pergunta certa: "o que acontece se o cliente vir este dado com 30 segundos de atraso?" Se a resposta for "nada demais",
+pode cachear.
+                         AS ARMADILHAS DO CACHE
+
+Problema                 O que acontece                                           Como se trata
+Dado velho
+Avalanche (stampede)     esqueceu de invalidar; o cliente vê o preço antigo       invalidar em toda escrita; TTL curto
+Cache virou dependência
+Cache que volta velho    a chave expira e mil requisições vão ao banco ao mesmo   só uma busca, as outras esperam; TTLs com
+Memória acabando         tempo                                                    variação
+
+                         o Redis cai e o serviço cai junto                        OFF: ir direto ao banco
+
+                         o Redis salvou em disco, volta com o que mudou enquanto  cache sem persistência (--save "")
+                         estava fora
+
+                         chaves sem TTL se acumulam                               toda chave com TTL; política de descarte
+
+Uma delas apareceu ao preparar esta aula: o Redis da docker-class voltava com dado velho porque, por padrão, salva em
+disco ao ser desligado. A correção foi uma linha no compose.
+AO VIVO: DOCKER-CLASS
+
+O sistema da aula de saga, agora com /health em cada serviço,
+healthcheck no Docker, o id da requisição nos logs e Redis no
+estoque.
+
+1. Seguir uma compra pelos logs  6. MISS e HIT
+
+2. A saúde de cada serviço       7. Por dentro do Redis
+
+3. Banco fora: unhealthy         8. Invalidação
+
+4. Degradado não é indisponível  9. Redis fora: OFF
+
+5. Métricas que já temos
+
+ROTEIRO: docker-class/ROTEIRO-OBSERVABILIDADE.md
+ PARA DISCUTIR EM DUPLA
+
+1. O /health do pedidos deveria chamar o /health do catálogo, já que depende dele?
+2. Chegou um pedido enquanto o banco do estoque estava fora. O que aconteceu com ele?
+3. O admin mudou o preço de um produto. Quanto tempo o cliente pode ver o preço antigo na
+vitrine?
+4. Vale cachear a resposta do GET /pedidos/:id, que o cliente consulta várias vezes enquanto
+espera?
+                                                        RESPOSTAS 1 E 2
+
+1. O /health do pedidos deveria chamar o do catálogo? Não.
+O health diz se o próprio serviço consegue trabalhar. Se o pedidos ficasse "fora do ar" porque o catálogo caiu, um orquestrador
+reiniciaria o pedidos à toa, e uma queda viraria várias (falha em cascata). Além disso, os health checks chamando uns aos
+outros multiplicam as chamadas. A dependência do catálogo aparece no 503 do checkout e no health do próprio catálogo.
+
+2. Um pedido chegou com o banco do estoque fora. Ele se perdeu.
+O stock-service recebeu o pedido.criado, deu erro ao gravar a reserva, e o kafka.js só registrou no log; o offset avançou e o
+evento não volta. O pedido fica em AGUARDANDO_ESTOQUE para sempre. O certo: não confirmar o offset quando o erro é
+passageiro (o evento volta), ou mandar para um tópico de erros (DLQ) e reprocessar depois. É a limitação listada no README
+da referência.
+                                                        RESPOSTAS 3 E 4
+
+3. Quanto tempo o preço antigo aparece? Nenhum, se a invalidação funcionar; no máximo o TTL, se ela falhar.
+A edição do admin faz a invalidação (DEL ou INCR da versão), e a próxima leitura já busca o preço novo. Se a invalidação falhar
+(o Redis estava fora naquele instante), o TTL limita o estrago: 60 s na referência. E no checkout o preço é sempre consultado no
+catálogo, não no cache da vitrine: ninguém paga o preço velho.
+
+4. Cachear o GET /pedidos/:id? Não.
+O cliente consulta várias vezes justamente para ver o status MUDAR (AGUARDANDO → PAGO). Com cache, ele veria o status
+velho e consultaria mais ainda. É um dado de uma pessoa só, lido poucas vezes, e o banco do pedidos responde rápido. Cache
+vale para o que muitos leem e muda pouco; para avisar mudança, o caminho é avisar (e-mail, WebSocket), não guardar.
+  NO PROJETO: FECHAR O SISTEMA
+
+É a última entrega. Nada de serviço novo: deixar o que existe
+observável, documentado e fácil de subir.
+Quem está atrasado: primeiro a saga funcionando de ponta a ponta;
+depois o resto desta entrega.
+
+TUDO É OBRIGATÓRIO. Quem está atrasado começa pela saga.
+       O QUE ENTREGAR
+
+  1. /health em todos os serviços, com as dependências e os três estados.
+  2. healthcheck no compose: todos os serviços aparecem healthy.
+  3. Logs com pedidoId e correlationId: um grep mostra a compra inteira.
+  4. README, decisões (ADRs) e diagrama: alguém de fora sobe e entende.
+  5. http/fluxo-completo.http: a saga inteira, do login ao PAGO, e os casos de erro.
+  6. Sobe do zero com um comando, sem nenhum ajuste manual.
+  7. Cache com Redis na vitrine do catálogo, com invalidação.
+
+ENTREGA FINAL: tag entrega-final. Sem o compose subindo tudo e o .http vendendo, o trabalho é
+invalidado.
+                                  O QUE ENTREGAR 1/3: OBSERVABILIDADE
+
+O quê                O que fazer                                                                              Pronto quando
+
+/health              GET /health → { servico, status, dependencias }. status: ok, degradado ou fora do ar.    Parar o banco de pagamentos: /health/pagamentos
+(todos os serviços)  Dependências: o banco do serviço, o Kafka, e o cache e o circuito onde houver. 503 só    responde 503. Banco do cartão fora (falhaPercent 100):
+                     quando falta uma dependência essencial (banco, Kafka); cache fora ou circuito aberto =   degradado, 200.
+                     degradado, 200. Pelo Kong: /health/<servico>, sem token.
+
+healthcheck          Para cada serviço: test chamando o /health de dentro do container (wget), interval 10s,  docker compose ps mostra todos os serviços (healthy). Com
+(compose ou          retries 3, start_period para dar tempo de subir. Onde fizer sentido, depends_on com      o banco de pagamentos parado, em uns 30 s aparece
+Dockerfile)          condition: service_healthy.                                                              (unhealthy).
+
+logs                 Toda linha de evento (publicou, recebeu, compensou) com o pedidoId e o correlationId.    docker compose logs | grep <X-Request-Id> mostra a
+                     Nada de senha, token, cartão ou CPF. O /health fora do log.                              compra inteira, passando por pelo menos 4 serviços.
+                        O QUE ENTREGAR 2/3: DOCUMENTAÇÃO
+
+O quê      O que fazer                                                                             Pronto quando
+README.md
+           Como subir (um comando, as portas, os usuários do seed); o diagrama; a tabela de        Um colega de outra dupla sobe o sistema e roda a compra
+           serviços (banco e responsabilidade); a tabela de eventos (quem publica, quem consome);  só lendo o README, sem perguntar nada.
+           as rotas e o acesso de cada uma; como demonstrar a saga, a recusa, o cancelamento e o
+           circuit breaker; as limitações conhecidas.
+
+docs/adr/  Pelo menos 3 decisões de arquitetura, uma por arquivo (contexto, decisão,               Cada ADR explica o PORQUÊ e o que se perdeu com a
+           consequências). Ex.: o banco de cada serviço, coreografia na saga, um consumer por      escolha, não só o que foi feito.
+           perfil no Kong, cancelar ou esperar quando o banco cai.
+
+diagrama   Os serviços, o banco de cada um, o Kong, o Kafka com os tópicos e o banco-falso. No     Bate com o docker-compose.yml: nenhum serviço a mais
+           README ou em docs/ (imagem, Mermaid ou draw.io).                                        nem a menos.
+                                 O QUE ENTREGAR 3/3: DEMONSTRAÇÃO E CACHE
+
+O quê               O que fazer                                                                               Pronto quando
+
+http/fluxo-         Login → carrinho → checkout (202) → consultar até PAGO → consultar o pagamento.
+completo.http       Depois: cartão 0002 (CANCELADO, estoque de volta), cancelamento com estorno, cliente Roda do começo ao fim, em ordem, sem editar nada.
+                    em rota de admin (403).
+
+subir do zero       docker compose down -v && docker compose up -d --build sobe tudo: migrações, seeds e Num clone novo do repositório, o .http acima roda depois de
+
+                    tópicos criados sozinhos. Nada de passo manual escondido.                                 um único comando.
+
+cache               Redis no compose, sem persistência. Cache-aside em GET /produtos, /produtos/:id e /       MISS e depois HIT; o admin muda o preço e o próximo GET
+(catálogo + Redis)  categorias, com TTL. Invalidar em toda escrita de produto e categoria e quando o estoque  já mostra o novo; com o Redis parado, a vitrine responde.
+                    muda. Cabeçalho X-Cache (HIT, MISS, OFF). Redis fora: a vitrine continua (OFF) e o /
+                    health do catálogo fica degradado.
+# E-commerce em microserviços  UM README QUE FUNCIONA
+Dupla: Fulana e Ciclano
+                                                                          Escrito para quem nunca viu o projeto: o avaliador, um
+## Subir                                                                  colega, vocês daqui a um ano.
+docker compose up -d --build
+Portas · usuários do seed                                                 Subir primeiro: a primeira coisa que alguém quer é ver
+                                                                          funcionando.
+
+## Arquitetura                           Tabelas em vez de parágrafos para rotas e eventos: a
+diagrama · serviços e bancos             referência tem um exemplo pronto.
+
+## Rotas                                 Limitações conhecidas: dizer o que não está resolvido
+rota · método · acesso                   (outbox, DLQ, estorno que falha) mostra que vocês
+                                         entenderam o sistema. Esconder, o contrário.
+## Eventos
+evento · tópico · publica · consome
+
+## Demonstração
+saga · recusa · cancelamento · circuito
+
+## Decisões → docs/adr/
+## Limitações conhecidas
+       REQUISITO Nº 1
+
+Num clone novo do repositório, sem nenhum passo a mais:
+
+  1. docker compose up -d --build
+
+      coloca TUDO no ar: serviços, bancos, Kafka, Kong, Redis, Mailpit e banco-falso. Migrações, seeds
+  e tópicos se criam sozinhos: o sistema sobe COM DADOS.
+
+  2. http/fluxo-completo.http
+
+      roda do começo ao fim e passa uma venda: login, carrinho, checkout e o pedido chega a PAGO.
+  Sem editar nada.
+
+                Se isso não acontecer, o trabalho é INVALIDADO.
+
+                    Não importa quanto código exista: se não sobe e não vende, não há o que avaliar.
+O FLUXO-COMPLETO.HTTP
+
+@baseUrl = http://localhost:8080                                       Ordem: login → vitrine → carrinho → checkout (202)
+                                                                       → consultar o pedido até PAGO → consultar o
+### 1. Login do cliente do seed                                        pagamento.
+# @name login
+POST {{baseUrl}}/auth/login                                            Nada fixo no arquivo: o token e os ids vêm das
+Content-Type: application/json                                         respostas anteriores (# @name). O id de um produto
+                                                                       no Mongo muda a cada subida do zero.
+{ "email": "cliente@loja.com", "senha": "cliente123" }
+                                                                       Usuários do seed: cliente@loja.com / cliente123 e
+### 2. Vitrine: guarda o id do primeiro produto                        admin@loja.com / admin123.
+# @name vitrine
+GET {{baseUrl}}/produtos                                               Depois da venda: cartão 0002 (CANCELADO e
+                                                                       estoque de volta), cancelamento com estorno e
+### 3. Carrinho                                                        cliente em rota de admin (403).
+POST {{baseUrl}}/carrinho/itens
+Authorization: Bearer {{login.response.body.$.token}}                  Esperar o PAGO: reenviar o GET do pedido até o
+                                                                       status mudar é permitido.
+{ "produtoId": "{{vitrine.response.body.$[0].id}}", "quantidade": 1 }
+
+### 4. Checkout (202) · 5. GET /pedidos/:id até PAGO · 6. o pagamento
+                    TODOS OS REQUISITOS 1/6: INFRAESTRUTURA
+
+Peça                O que precisa ter                                                                                                                   Aula
+docker-compose.yml
+                    Todos os serviços e um banco por serviço: Postgres (usuarios), Mongo (catalogo), Postgres (pedidos), Postgres (pagamentos). Mais    06–10
+                    Kafka (KRaft) e Kafka UI, Redis, Mailpit, banco-falso e Kong.
+
+Portas              Só ficam expostos o Kong (8080, e 8001/8002 do painel), o Kafka UI, o Mailpit (8025) e o banco-falso (9000). Serviços e bancos sem  07
+                    ports.
+
+Subida sozinha      Migrações, seeds e tópicos criados no start, idempotentes (subir duas vezes não duplica nada). Serviços esperam o banco e o Kafka   06, 08, 10
+                    (retry, depends_on com healthy). Variáveis com valor padrão no compose: nada de .env que não está no repositório.
+
+Seeds               admin@loja.com / admin123 (admin); cliente@loja.com / cliente123 (cliente, com um endereço); 3 categorias; pelo menos 10            06
+                    produtos, com atributos diferentes por categoria e estoque.
+
+Erros               Sempre { erro, detalhes }. Nunca stack trace, nunca mensagem do banco, nunca senha_hash.                                            06
+
+Repositório         README (subir, diagrama, serviços, rotas, eventos, demonstração, limitações), ADRs em docs/adr/, pasta http/ com os .http, tag      06, 08, 10
+                    entrega-final.
+                  TODOS OS REQUISITOS 2/6: USUARIOS
+
+Peça              O que precisa ter                                                                                                             Aula
+Banco (Postgres)                                                                                                                                06
+                  Tabela usuarios: id, nome, email UNIQUE, senha_hash (bcrypt), perfil (cliente | admin), criado_em. Tabela enderecos: FK para
+                  usuarios com ON DELETE CASCADE, cep, logradouro, número, cidade, uf, principal. Criadas por migration.
+
+Rotas públicas    POST /auth/login → 200 { token, usuario } | 401. POST /usuarios → 201 (sem a senha) | 400 | 409 (e-mail repetido).            06
+
+Rotas logadas     GET e PUT /usuarios/me. GET e POST /usuarios/me/enderecos. DELETE /usuarios/me/enderecos/:id → 204 | 404 (não existe ou       06
+                  não é seu).
+
+Rota de admin     GET /usuarios → 200 lista (sem senha_hash) | 403 para cliente.                                                                06, 07
+
+JWT               Único serviço que emite token. HS256, com sub (id), email, perfil e exp (2 h). O perfil vem do banco no login.                06, 07
+                                     TODOS OS REQUISITOS 3/6: CATALOGO
+
+Peça              O que precisa ter                                                                                                                       Aula
+Banco (Mongo)
+Rotas             produtos: sku único, nome, categoria, preço, atributos livres, estoque { disponivel, reservado }, ativo. categorias: nome, slug único.  06, 08
+Reserva (evento)  reservas: pedidoId único.
+Compensação
+Cache (Redis)     Público: GET /produtos?categoria=&busca=, GET /produtos/:id, GET /categorias. Admin: POST /produtos (409 sku repetido), PUT /           06, 07
+                  produtos/:id, PATCH /produtos/:id/estoque, DELETE /produtos/:id (desativa, não apaga), POST /categorias (409 slug repetido).
+
+                  Escuta pedido.criado: reserva tudo ou nada, só se houver saldo ($gte), sem repetir (pedidoId único). Publica estoque.reservado ou       08
+                  estoque.insuficiente.
+
+                  pagamento.aprovado: confirma (sai do reservado). pagamento.recusado e pedido.cancelado: devolve o estoque, só se a reserva              09
+                  ainda estiver reservada.
+
+                  Cache-aside na vitrine (produtos, produto, categorias), com TTL. Invalida em toda escrita e quando o estoque muda. X-Cache: HIT,        10
+                  MISS ou OFF. Redis fora: a vitrine continua.
+                                      TODOS OS REQUISITOS 4/6: PEDIDOS
+
+Peça               O que precisa ter                                                                                                            Aula
+Banco (Postgres)
+Rotas (logado)     carrinho_itens; pedidos com status AGUARDANDO_ESTOQUE | AGUARDANDO_PAGAMENTO | PAGO | CANCELADO e motivo;                    07
+Checkout           itens_pedido com nome e preço copiados. Sem FK para usuários e produtos (moram em outros bancos).
+
+                   GET /carrinho, POST /carrinho/itens (404 produto inexistente), DELETE /carrinho/itens/:produtoId. POST /pedidos → 202 | 400  07, 09
+                   carrinho vazio | 409 produto indisponível | 503 catálogo fora. GET /pedidos, GET /pedidos/:id (404 se for de outro), POST /
+                   pedidos/:id/cancelar (409 se não pode).
+
+                   Consulta o preço no catálogo de forma síncrona, com timeout de 3 s. Grava o pedido e depois do COMMIT publica pedido.criado  07, 08
+                   (com itens, valor, forma de pagamento, e-mail).
+
+Status por evento  estoque.reservado → AGUARDANDO_PAGAMENTO; estoque.insuficiente → CANCELADO; pagamento.aprovado → PAGO;                       08, 09
+                   pagamento.recusado → CANCELADO. Só a partir do status esperado.
+
+Cancelar           Só em AGUARDANDO_ESTOQUE ou AGUARDANDO_PAGAMENTO; muda para CANCELADO e publica pedido.cancelado.                            09
+                   TODOS OS REQUISITOS 5/6: PAGAMENTOS E BANCO-FALSO
+
+Peça               O que precisa ter                                                                                                               Aula
+banco-falso                                                                                                                                        09
+Banco (Postgres)   Porta 9000, fora do Kong. POST /cobrancas: cartão final 0002 → 402; senão 201 com código. falhaPercent (503) e latenciaMs
+Cobrança (evento)  ajustáveis por POST /config. POST /estornos.
+Resiliência
+Cancelamento       Tabela pagamentos: pedido_id UNIQUE, valor, forma, cartão final, status PENDENTE | APROVADO | RECUSADO | ERRO |                 09
+Rotas              CANCELADO | ESTORNADO, tentativas, código da transação, motivo.
+
+                   Escuta estoque.reservado: grava PENDENTE sem repetir, cobra no banco, publica pagamento.aprovado ou pagamento.recusado          09
+                   (banco fora também recusa, com o motivo).
+
+                   Timeout de 2 s; retry de até 3 tentativas com espera crescente, só para falha passageira; circuit breaker (opossum); estado do  09
+                   circuito no /health.
+
+                   Escuta pedido.cancelado: ainda não cobrou → grava CANCELADO (a cobrança futura é ignorada); já cobrou → estorna e publica       09
+                   pagamento.estornado.
+
+                   GET /pagamentos/:pedidoId (dono ou admin), GET /pagamentos (admin).                                                             09
+                    TODOS OS REQUISITOS 6/6: KONG, KAFKA, NOTIFICAÇÕES E SAÚDE
+
+Peça                O que precisa ter                                                                                                                   Aula
+Kong (kong.yml)
+                    Sem banco. Rotas públicas, logadas (jwt) e de admin (jwt + acl). jwt com key_claim_name: perfil; consumers cliente e admin, cada    07, 10
+                    um no seu grupo. correlation-id (X-Request-Id). rate-limiting no login (10/min por IP). Apaga e injeta X-User-*. /health/<servico>
+                    público.
+
+Kafka               Tópicos pedidos, estoque e pagamentos. Envelope { id, tipo, pedidoId, ocorridoEm, correlationId, dados }. Chave = id do pedido. Um  08
+                    consumer group por serviço.
+
+notificacoes        Sem banco e sem rota no Kong. E-mail no Mailpit para: pedido recebido, estoque insuficiente, pagamento aprovado, recusado e         08, 09
+                    estornado.
+
+/health             Em todos os serviços: { servico, status, dependencias }. ok e degradado → 200; fora do ar (sem banco ou sem Kafka) → 503.           10
+
+healthcheck e logs  healthcheck no compose (todos healthy). Toda linha de evento com o pedidoId e o correlationId; nada de senha, token ou cartão no    10
+                    log.
+ANTES DE ENTREGAR: O TESTE DO CLONE LIMPO
+
+# numa pasta nova, como o professor vai fazer   Por que um clone novo: na máquina de vocês, o
+git clone <url-do-repositório> teste            banco já tem tabelas, o .env está lá e as imagens
+cd teste                                        já existem. Num clone novo, nada disso existe.
+
+docker compose up -d --build                    Os erros mais comuns: arquivo .env fora do Git,
+                                                tabela criada à mão no pgAdmin, seed que só roda
+docker compose ps      # todos de pé e healthy  com um comando a mais, id de produto fixo
+                                                no .http, serviço que sobe antes do Kafka e morre.
+# abrir http/fluxo-completo.http
+# e rodar de cima para baixo até PAGO
+
+git tag entrega-final
+git push --tags
+
+Funcionou no clone limpo? Então funciona na avaliação. Não funcionou? Esse é o problema mais importante do
+projeto, antes de qualquer outro.
+    PRÓXIMA AULA: DEMONSTRAÇÃO
+
+01 Colocar no ar: o e-commerce no servidor da faculdade.
+
+02 Escala: réplicas atrás do Kong e dividindo o Kafka.
+
+03 Teste de carga: o circuito abrindo, o lag crescendo, a escala resolvendo.
+
+04  Métricas e traces de verdade: Prometheus, Grafana, Jaeger. E o que vem depois: Kubernetes
+    e CI/CD.
+

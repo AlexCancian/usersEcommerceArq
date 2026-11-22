@@ -47,9 +47,11 @@ router.post("/config", validate(configSchema), (req: Request, res: Response) => 
   return res.status(200).json(mudarConfigService(req.body));
 });
 
-// GET /health
+// GET /health (aula 10). Sem dependências; latência e falhas simuladas continuam em GET /config.
 router.get("/health", (_req: Request, res: Response) => {
-  return res.status(200).json({ status: "ok", ...lerConfigService() });
+  const corpo = { servico: "banco-falso", status: "ok", dependencias: {} } as const;
+  res.setHeader("Cache-Control", "no-store");
+  return res.status(200).json(corpo);
 });
 
 export default router;

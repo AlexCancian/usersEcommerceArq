@@ -10,14 +10,16 @@ import {
   TIPOS,
   TOPICOS,
 } from "../utils/eventos.js";
+import { logEvento } from "../utils/log.js";
 
 // Dados inválidos = log + return (descarte, D06); erro de infraestrutura sobe para o retry.
 async function aoCriarPedido(evento: EnvelopeRecebido): Promise<void> {
   const dados = pedidoCriadoDadosSchema.safeParse(evento.dados);
   if (!dados.success) {
-    console.error(
-      `[correlationId=${evento.correlationId}] evento inválido descartado ${evento.tipo} pedidoId=${evento.pedidoId}: ${dados.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`
-    );
+    // Só o caminho e a regra violada; nunca os dados do envelope (têm e-mail do cliente).
+    logEvento("descartou", evento.tipo, evento.pedidoId, evento.correlationId, {
+      motivo: dados.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+    });
     return;
   }
 

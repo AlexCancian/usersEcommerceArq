@@ -1,5 +1,6 @@
 import { iniciarConsumer } from "../config/kafka.js";
-import { ZodType } from "zod";
+import { ZodIssue, ZodType } from "zod";
+import { logEvento } from "../utils/log.js";
 import {
   avisarPagamentoAprovadoService,
   avisarPagamentoEstornadoService,
@@ -18,13 +19,18 @@ import {
   TOPICOS,
 } from "../utils/eventos.js";
 
+// Só caminho e regra violada: nunca os dados do envelope (têm e-mail do cliente).
+function descartar(evento: EnvelopeRecebido, issues: ZodIssue[]): void {
+  logEvento("descartou", evento.tipo, evento.pedidoId, evento.correlationId, {
+    motivo: issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+  });
+}
+
 // Dados inválidos = log + return (descarte, D06); erro de SMTP sobe para o retry.
 async function aoCriarPedido(evento: EnvelopeRecebido): Promise<void> {
   const dados = pedidoCriadoDadosSchema.safeParse(evento.dados);
   if (!dados.success) {
-    console.error(
-      `[correlationId=${evento.correlationId}] evento inválido descartado ${evento.tipo} pedidoId=${evento.pedidoId}: ${dados.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`
-    );
+    descartar(evento, dados.error.issues);
     return;
   }
   await avisarPedidoRecebidoService(evento, dados.data);
@@ -33,9 +39,7 @@ async function aoCriarPedido(evento: EnvelopeRecebido): Promise<void> {
 async function aoFaltarEstoque(evento: EnvelopeRecebido): Promise<void> {
   const dados = estoqueInsuficienteDadosSchema.safeParse(evento.dados);
   if (!dados.success) {
-    console.error(
-      `[correlationId=${evento.correlationId}] evento inválido descartado ${evento.tipo} pedidoId=${evento.pedidoId}: ${dados.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`
-    );
+    descartar(evento, dados.error.issues);
     return;
   }
   await avisarSemEstoqueService(evento, dados.data);
@@ -49,9 +53,7 @@ function comSchema<T>(
   return async (evento) => {
     const dados = schema.safeParse(evento.dados);
     if (!dados.success) {
-      console.error(
-        `[correlationId=${evento.correlationId}] evento inválido descartado ${evento.tipo} pedidoId=${evento.pedidoId}: ${dados.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`
-      );
+      descartar(evento, dados.error.issues);
       return;
     }
     await avisar(evento, dados.data);

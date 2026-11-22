@@ -25,9 +25,9 @@ async function main() {
         perfil: Perfil.admin,
       },
     });
-    console.log(`✅ Usuário administrador criado: ${admin.email} (ID: ${admin.id})`);
+    console.log(`✅ Usuário administrador criado: perfil=admin (ID: ${admin.id})`);
   } else {
-    console.log(`ℹ️ Usuário administrador já existe: ${existingAdmin.email}`);
+    console.log(`ℹ️ Usuário administrador já existe: perfil=admin`);
   }
 
   // 2. Usuário Cliente com um endereço
@@ -59,9 +59,9 @@ async function main() {
       },
       include: { enderecos: true },
     });
-    console.log(`✅ Usuário cliente com endereço criado: ${cliente.email} (ID: ${cliente.id})`);
+    console.log(`✅ Usuário cliente com endereço criado: perfil=cliente (ID: ${cliente.id})`);
   } else {
-    console.log(`ℹ️ Usuário cliente já existe: ${cliente.email}`);
+    console.log(`ℹ️ Usuário cliente já existe: perfil=cliente`);
 
     // Garante que o cliente tenha ao menos um endereço sem duplicar
     if (cliente.enderecos.length === 0) {

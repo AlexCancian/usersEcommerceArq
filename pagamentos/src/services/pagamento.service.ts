@@ -12,6 +12,7 @@ import {
   PagamentoView,
 } from "../repositories/pagamento.repository.js";
 import { ForbiddenError, NotFoundError } from "../utils/errors.js";
+import { descreverErro, logEvento } from "../utils/log.js";
 import {
   EnvelopeRecebido,
   EstoqueReservadoDados,
@@ -33,7 +34,7 @@ interface Cliente {
 }
 
 const logDe = (correlationId: string, pedidoId: string): string =>
-  `[correlationId=${correlationId}] pedidoId=${pedidoId}`;
+  `[pagamentos] pedidoId=${pedidoId} correlationId=${correlationId}`;
 
 async function publicarAprovado(
   pedidoId: string,
@@ -107,7 +108,6 @@ async function estornarERegistrar(
   cliente: Cliente,
   correlationId: string
 ): Promise<void> {
-  const log = logDe(correlationId, pedidoId);
   await estornar(pedidoId, codigo, correlationId);
 
   const alterados = await mudarStatus(
@@ -116,11 +116,16 @@ async function estornarERegistrar(
     { status: StatusPagamento.ESTORNADO, motivo: "pedido cancelado pelo cliente: cobrança estornada" }
   );
   if (alterados === 0) {
-    console.log(`${log} estorno já registrado antes (evento repetido)`);
+    logEvento("ignorou", TIPOS.PEDIDO_CANCELADO, pedidoId, correlationId, {
+      motivo: "estorno-ja-registrado",
+    });
     return;
   }
 
-  console.log(`${log} COMPENSAÇÃO: cobrança ${codigo} estornada → ESTORNADO`);
+  logEvento("compensou", TIPOS.PEDIDO_CANCELADO, pedidoId, correlationId, {
+    acao: "estornado",
+    codigo,
+  });
   await publicar<PagamentoEstornadoDados>(
     TOPICOS.PAGAMENTOS,
     TIPOS.PAGAMENTO_ESTORNADO,
@@ -164,9 +169,9 @@ export const processarEstoqueReservadoService = async (
       case StatusPagamento.APROVADO:
       case StatusPagamento.RECUSADO:
       case StatusPagamento.ERRO:
-        console.log(
-          `${log} estoque.reservado repetido: pagamento já ${existente.status}, sem cobrar de novo (republicando o resultado)`
-        );
+        logEvento("ignorou", TIPOS.ESTOQUE_RESERVADO, pedidoId, correlationId, {
+          motivo: `repetido-pagamento-ja-${existente.status}-republicando-resultado`,
+        });
         await republicarResultado(existente, cliente, correlationId);
         return;
       case StatusPagamento.CANCELADO:
@@ -175,10 +180,14 @@ export const processarEstoqueReservadoService = async (
           await estornarERegistrar(pedidoId, existente.codigo_transacao, valor, cliente, correlationId);
           return;
         }
-        console.log(`${log} estoque.reservado ignorado: pedido cancelado antes da cobrança, o banco não é chamado`);
+        logEvento("ignorou", TIPOS.ESTOQUE_RESERVADO, pedidoId, correlationId, {
+          motivo: "pedido-cancelado-antes-da-cobranca",
+        });
         return;
       default:
-        console.log(`${log} estoque.reservado ignorado: pagamento já ${existente.status}`);
+        logEvento("ignorou", TIPOS.ESTOQUE_RESERVADO, pedidoId, correlationId, {
+          motivo: `pagamento-ja-${existente.status}`,
+        });
         return;
     }
   } else {
@@ -206,14 +215,17 @@ export const processarEstoqueReservadoService = async (
         const estorno = await estornar(pedidoId, null, correlationId);
         if (estorno === "estornado") {
           motivo = `${motivo}; a cobrança feita sem resposta foi estornada por segurança`;
-          console.warn(`${log} COMPENSAÇÃO: o banco tinha cobrado sem responder, estorno por segurança feito`);
+          logEvento("compensou", TIPOS.ESTOQUE_RESERVADO, pedidoId, correlationId, {
+            acao: "estornado",
+            motivo: "o banco tinha cobrado sem responder; estorno por segurança",
+          });
         }
       } catch (erro) {
         // Fica para a conciliação (limitação conhecida: não há ESTORNO_PENDENTE).
-        console.error(
-          `${log} estorno por segurança FALHOU: conferir na conciliação com o banco:`,
-          erro
-        );
+        logEvento("falhou", TIPOS.ESTOQUE_RESERVADO, pedidoId, correlationId, {
+          motivo: "estorno por segurança falhou: conferir na conciliação com o banco",
+          erro: descreverErro(erro),
+        });
       }
     }
   }
@@ -230,11 +242,15 @@ export const processarEstoqueReservadoService = async (
     // O pedido.cancelado chegou durante a cobrança (outra réplica marcou CANCELADO).
     const atual = await buscarPorPedido(pedidoId);
     if (atual?.status !== StatusPagamento.CANCELADO) {
-      console.log(`${log} resultado da cobrança descartado: pagamento já ${atual?.status ?? "inexistente"}`);
+      logEvento("ignorou", TIPOS.ESTOQUE_RESERVADO, pedidoId, correlationId, {
+        motivo: `resultado-descartado-pagamento-ja-${atual?.status ?? "inexistente"}`,
+      });
       return;
     }
     if (codigo === null) {
-      console.log(`${log} cancelado durante a cobrança e o banco não cobrou: nada a estornar`);
+      logEvento("ignorou", TIPOS.ESTOQUE_RESERVADO, pedidoId, correlationId, {
+        motivo: "cancelado-durante-a-cobranca-nada-a-estornar",
+      });
       return;
     }
     // Grava o código antes de estornar: se o estorno falhar, a reentrega sabe o que devolver.
@@ -247,9 +263,11 @@ export const processarEstoqueReservadoService = async (
     return;
   }
 
-  console.log(
-    `${log} pagamento ${status} em ${resultado.tentativas} tentativa(s)${motivo ? `: ${motivo}` : ""}`
-  );
+  logEvento("processou", TIPOS.ESTOQUE_RESERVADO, pedidoId, correlationId, {
+    resultado: status,
+    tentativas: resultado.tentativas,
+    ...(motivo ? { motivo } : {}),
+  });
 
   // Recusa do banco e banco fora dão no mesmo evento, com motivos diferentes: a saga compensa igual.
   if (codigo !== null) {
@@ -313,7 +331,9 @@ export const cancelarPagamentoService = async (
     (pagamento.status === StatusPagamento.CANCELADO && pagamento.codigo_transacao !== null);
 
   if (!cobrado || !pagamento.codigo_transacao) {
-    console.log(`${log} pedido.cancelado: pagamento ${pagamento.status}, nada a estornar`);
+    logEvento("ignorou", TIPOS.PEDIDO_CANCELADO, pedidoId, correlationId, {
+      motivo: `pagamento-${pagamento.status}-nada-a-estornar`,
+    });
     return;
   }
 

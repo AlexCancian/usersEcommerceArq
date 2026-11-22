@@ -17,6 +17,7 @@ import { BadRequestError, ConflictError, NotFoundError } from "../utils/errors.j
 import { CheckoutDTO } from "../utils/schemas.js";
 import { PedidoCanceladoDados, PedidoCriadoDados, TIPOS, TOPICOS } from "../utils/eventos.js";
 import { UsuarioIdentidade } from "../middleware/auth.js";
+import { descreverErro, logEvento } from "../utils/log.js";
 
 // Status em que o pedido ainda pode ser cancelado
 const STATUS_CANCELAVEIS: StatusPedido[] = [
@@ -110,10 +111,10 @@ export const checkoutService = async (
 
     await publicar(TOPICOS.PEDIDOS, TIPOS.PEDIDO_CRIADO, pedido.id, dadosEvento, correlationId);
   } catch (erro) {
-    console.error(
-      `[correlationId=${correlationId}] falha ao publicar pedido.criado pedidoId=${pedido.id} (pedido gravado, ficará em AGUARDANDO_ESTOQUE):`,
-      erro
-    );
+    logEvento("falhou", TIPOS.PEDIDO_CRIADO, pedido.id, correlationId, {
+      motivo: "falha ao publicar; pedido gravado, ficará em AGUARDANDO_ESTOQUE",
+      erro: descreverErro(erro),
+    });
   }
 
   return pedido;
@@ -131,14 +132,14 @@ export const confirmarEstoqueReservadoService = async (
   );
 
   if (alterados === 0) {
-    console.log(
-      `[correlationId=${correlationId}] estoque.reservado ignorado pedidoId=${pedidoId} (repetido ou status já mudou)`
-    );
+    logEvento("ignorou", TIPOS.ESTOQUE_RESERVADO, pedidoId, correlationId, {
+      motivo: "repetido-ou-status-ja-mudou",
+    });
     return;
   }
-  console.log(
-    `[correlationId=${correlationId}] recebido estoque.reservado pedidoId=${pedidoId} → AGUARDANDO_PAGAMENTO`
-  );
+  logEvento("processou", TIPOS.ESTOQUE_RESERVADO, pedidoId, correlationId, {
+    status: StatusPedido.AGUARDANDO_PAGAMENTO,
+  });
 };
 
 // Reação a estoque.insuficiente: AGUARDANDO_ESTOQUE → CANCELADO, com o motivo (RN07).
@@ -155,14 +156,14 @@ export const cancelarPorEstoqueInsuficienteService = async (
   );
 
   if (alterados === 0) {
-    console.log(
-      `[correlationId=${correlationId}] estoque.insuficiente ignorado pedidoId=${pedidoId} (repetido ou status já mudou)`
-    );
+    logEvento("ignorou", TIPOS.ESTOQUE_INSUFICIENTE, pedidoId, correlationId, {
+      motivo: "repetido-ou-status-ja-mudou",
+    });
     return;
   }
-  console.log(
-    `[correlationId=${correlationId}] recebido estoque.insuficiente pedidoId=${pedidoId} → CANCELADO`
-  );
+  logEvento("processou", TIPOS.ESTOQUE_INSUFICIENTE, pedidoId, correlationId, {
+    status: StatusPedido.CANCELADO,
+  });
 };
 
 // ---- Aula 09: reações ao pagamento (tópico pagamentos)
@@ -178,12 +179,14 @@ export const confirmarPagamentoService = async (
   ]);
 
   if (alterados === 0) {
-    console.log(
-      `[correlationId=${correlationId}] pagamento.aprovado ignorado pedidoId=${pedidoId} (repetido ou status já mudou)`
-    );
+    logEvento("ignorou", TIPOS.PAGAMENTO_APROVADO, pedidoId, correlationId, {
+      motivo: "repetido-ou-status-ja-mudou",
+    });
     return;
   }
-  console.log(`[correlationId=${correlationId}] recebido pagamento.aprovado pedidoId=${pedidoId} → PAGO`);
+  logEvento("processou", TIPOS.PAGAMENTO_APROVADO, pedidoId, correlationId, {
+    status: StatusPedido.PAGO,
+  });
 };
 
 // COMPENSAÇÃO: pagamento.recusado (recusa do banco ou banco fora) → CANCELADO com o motivo.
@@ -200,14 +203,15 @@ export const cancelarPorPagamentoRecusadoService = async (
   );
 
   if (alterados === 0) {
-    console.log(
-      `[correlationId=${correlationId}] pagamento.recusado ignorado pedidoId=${pedidoId} (repetido ou status já mudou)`
-    );
+    logEvento("ignorou", TIPOS.PAGAMENTO_RECUSADO, pedidoId, correlationId, {
+      motivo: "repetido-ou-status-ja-mudou",
+    });
     return;
   }
-  console.log(
-    `[correlationId=${correlationId}] COMPENSAÇÃO: pagamento.recusado pedidoId=${pedidoId} → CANCELADO (${motivo})`
-  );
+  logEvento("compensou", TIPOS.PAGAMENTO_RECUSADO, pedidoId, correlationId, {
+    acao: "pedido-cancelado",
+    status: StatusPedido.CANCELADO,
+  });
 };
 
 export const listarPedidosService = async (usuarioId: string): Promise<PedidoComItens[]> => {
@@ -273,10 +277,10 @@ export const cancelarPedidoService = async (
       correlationId
     );
   } catch (erro) {
-    console.error(
-      `[correlationId=${correlationId}] falha ao publicar pedido.cancelado pedidoId=${id} (pedido CANCELADO, mas estoque e pagamento não foram avisados):`,
-      erro
-    );
+    logEvento("falhou", TIPOS.PEDIDO_CANCELADO, id, correlationId, {
+      motivo: "falha ao publicar; pedido CANCELADO, mas estoque e pagamento não foram avisados",
+      erro: descreverErro(erro),
+    });
   }
 
   return buscarPedidoService(id, usuarioId);

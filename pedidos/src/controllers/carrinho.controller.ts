@@ -1,6 +1,7 @@
 import { Router, Response, NextFunction } from "express";
 import { AuthenticatedRequest, lerIdentidade } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
+import { lerRequestId } from "../utils/log.js";
 import { adicionarItemSchema, produtoIdParamSchema } from "../utils/schemas.js";
 import {
   adicionarItemService,
@@ -16,7 +17,7 @@ router.use(lerIdentidade);
 // GET /carrinho - 200 { itens, total } com preços atuais do catálogo
 router.get("/", async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const carrinho = await verCarrinhoService(req.user!.id, req.header("x-request-id"));
+    const carrinho = await verCarrinhoService(req.user!.id, lerRequestId(req.header("x-request-id")));
     return res.status(200).json(carrinho);
   } catch (error) {
     next(error);
@@ -32,7 +33,7 @@ router.post(
       const item = await adicionarItemService(
         req.user!.id,
         req.body,
-        req.header("x-request-id")
+        lerRequestId(req.header("x-request-id"))
       );
       return res.status(201).json(item);
     } catch (error) {

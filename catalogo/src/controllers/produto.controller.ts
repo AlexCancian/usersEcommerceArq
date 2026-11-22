@@ -8,8 +8,9 @@ import {
   queryProdutoSchema,
 } from "../utils/schemas.js";
 import {
-  listProdutosAtivosService,
-  getProdutoByIdService,
+  listarVitrineService,
+  listarProdutosPorIdsService,
+  getProdutoCacheadoService,
   createProdutoService,
   updateProdutoService,
   ajustarEstoqueService,
@@ -29,14 +30,20 @@ router.get(
         busca?: string;
         ids?: string;
       };
-      const produtos = await listProdutosAtivosService({
-        categoria,
-        busca,
-        ids: ids
-          ? ids.split(",").map((id) => id.trim()).filter((id) => id.length > 0)
-          : undefined,
-      });
-      return res.status(200).json(produtos);
+      // Com ids (busca em lote do checkout): sem cache e sem X-Cache; ids vence os demais filtros.
+      const lista = ids
+        ? ids.split(",").map((id) => id.trim()).filter((id) => id.length > 0)
+        : [];
+      if (lista.length > 0) {
+        const produtos = await listarProdutosPorIdsService(lista);
+        return res.status(200).json(produtos);
+      }
+      const resultado = await listarVitrineService({ categoria, busca });
+      return res
+        .status(200)
+        .set("X-Cache", resultado.cache)
+        .type("application/json")
+        .send(resultado.json);
     } catch (error) {
       next(error);
     }
@@ -49,8 +56,12 @@ router.get(
   validate(idParamSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const produto = await getProdutoByIdService(req.params.id);
-      return res.status(200).json(produto);
+      const resultado = await getProdutoCacheadoService(req.params.id);
+      return res
+        .status(200)
+        .set("X-Cache", resultado.cache)
+        .type("application/json")
+        .send(resultado.json);
     } catch (error) {
       next(error);
     }

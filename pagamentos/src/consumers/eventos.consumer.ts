@@ -11,13 +11,12 @@ import {
   TIPOS,
   TOPICOS,
 } from "../utils/eventos.js";
+import { logEvento } from "../utils/log.js";
 
 // Dados inválidos = log + return (descarte, D06 da aula 08); erro de infraestrutura
 // (banco, Kafka, estorno que não conseguiu) sobe para o kafkajs reentregar.
 function invalido(evento: EnvelopeRecebido, detalhes: string): void {
-  console.error(
-    `[correlationId=${evento.correlationId}] evento inválido descartado ${evento.tipo} pedidoId=${evento.pedidoId}: ${detalhes}`
-  );
+  logEvento("descartou", evento.tipo, evento.pedidoId, evento.correlationId, { motivo: detalhes });
 }
 
 async function aoReservarEstoque(evento: EnvelopeRecebido): Promise<void> {

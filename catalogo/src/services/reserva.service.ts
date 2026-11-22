@@ -1,4 +1,6 @@
 import { publicar } from "../config/kafka.js";
+import { logEvento } from "../utils/log.js";
+import { invalidarVitrine } from "./cache.service.js";
 import {
   buscarDisponivel,
   confirmarSaidaDoEstoque,
@@ -35,9 +37,7 @@ export const reservarEstoqueDoPedidoService = async (
     dados.itens.map((i) => ({ produtoId: i.produtoId, quantidade: i.quantidade }))
   );
   if (!criou) {
-    console.log(
-      `[correlationId=${correlationId}] evento repetido ignorado pedido.criado pedidoId=${pedidoId}`
-    );
+    logEvento("ignorou", evento.tipo, pedidoId, correlationId, { motivo: "evento-repetido" });
     return;
   }
 
@@ -75,6 +75,8 @@ export const reservarEstoqueDoPedidoService = async (
   }
 
   await concluirReserva(pedidoId, "reservado");
+  // O estoque mudou (e o líquido não volta): a vitrine precisa ler de novo antes do próximo evento.
+  await invalidarVitrine("estoque reservado", { pedidoId, correlationId });
   await publicar<EstoqueReservadoDados>(
     TOPICOS.ESTOQUE,
     TIPOS.ESTOQUE_RESERVADO,
@@ -100,18 +102,18 @@ export const confirmarReservaService = async (evento: EnvelopeRecebido): Promise
   const { pedidoId, correlationId } = evento;
   const reserva = await mudarStatusReserva(pedidoId, "reservado", "confirmado");
   if (!reserva) {
-    console.log(
-      `[correlationId=${correlationId}] ${evento.tipo} ignorado pedidoId=${pedidoId} (reserva não está mais reservada)`
-    );
+    logEvento("ignorou", evento.tipo, pedidoId, correlationId, { motivo: "reserva-nao-esta-reservada" });
     return;
   }
 
   for (const item of reserva.itens) {
     await confirmarSaidaDoEstoque(item.produtoId, item.quantidade);
   }
-  console.log(
-    `[correlationId=${correlationId}] reserva confirmada pedidoId=${pedidoId} (${reserva.itens.length} item(ns) saíram do reservado)`
-  );
+  await invalidarVitrine("reserva confirmada", { pedidoId, correlationId });
+  logEvento("processou", evento.tipo, pedidoId, correlationId, {
+    resultado: "reserva-confirmada",
+    itens: reserva.itens.length,
+  });
 };
 
 // COMPENSAÇÃO (pagamento.recusado e pedido.cancelado): devolve o estoque ao disponível.
@@ -130,9 +132,7 @@ export const liberarReservaService = async (evento: EnvelopeRecebido): Promise<v
   }
 
   if (!reserva) {
-    console.log(
-      `[correlationId=${correlationId}] ${evento.tipo} ignorado pedidoId=${pedidoId} (nada reservado para devolver)`
-    );
+    logEvento("ignorou", evento.tipo, pedidoId, correlationId, { motivo: "nada-reservado-para-devolver" });
     return;
   }
 
@@ -143,7 +143,9 @@ export const liberarReservaService = async (evento: EnvelopeRecebido): Promise<v
       await devolverEstoque(item.produtoId, item.quantidade);
     }
   }
-  console.log(
-    `[correlationId=${correlationId}] COMPENSAÇÃO: estoque devolvido pedidoId=${pedidoId} por ${evento.tipo} (${reserva.itens.length} item(ns))`
-  );
+  await invalidarVitrine("estoque devolvido", { pedidoId, correlationId });
+  logEvento("compensou", evento.tipo, pedidoId, correlationId, {
+    acao: "estoque-devolvido",
+    itens: reserva.itens.length,
+  });
 };

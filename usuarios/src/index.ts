@@ -3,10 +3,12 @@ import cors from "cors";
 import { env } from "./config/env.js";
 import routes from "./routes/routes.js";
 import { errorHandler } from "./middleware/errorHandler.js";
+import { requestLog } from "./middleware/requestLog.js";
 
 const app = express();
 
 app.use(cors());
+app.use(requestLog); // antes do express.json() e das rotas; sem corpo no log (POST /auth/login); /health fica fora
 app.use(express.json());
 
 // Registro de rotas da aplicação
